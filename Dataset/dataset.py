@@ -1,3 +1,12 @@
+# -*- coding: utf-8 -*-
+"""
+联邦半监督场景下的数据工具：按类别整理索引、划分有标/无标、封装为 PyTorch Dataset。
+
+与 SAGE.py 的配合方式：
+- classify_label + partition_train 得到全数据的有标/无标索引列表；
+- sample_dirichlet 将索引划分到各客户端；
+- Indices2Dataset_* 按客户端索引列表惰性加载子集，并施加 FixMatch 增广。
+"""
 import numpy as np
 from torch.utils.data.dataset import Dataset
 import copy
@@ -16,6 +25,7 @@ import time
 
 
 def classify_label(dataset, num_classes: int):
+    """返回 list[类 id] -> 属于该类的样本下标列表。"""
     list1 = [[] for _ in range(num_classes)]
     for idx, datum in enumerate(dataset):
         list1[datum[1]].append(idx)
@@ -24,6 +34,7 @@ def classify_label(dataset, num_classes: int):
 
 
 def show_clients_data_distribution(dataset, clients_indices_labeled, clients_indices_unlabeled, num_classes):
+    """调试：打印每个客户端、每个类别上的有标/无标样本数量。"""
     dict_per_client_labeled = []
 
     for client, indices in enumerate(zip(clients_indices_labeled, clients_indices_unlabeled)):
@@ -43,7 +54,10 @@ def show_clients_data_distribution(dataset, clients_indices_labeled, clients_ind
 
 
 def partition_train(list_label2indices: list, ipc):
-
+    """
+    对每一类：随机打乱后前 ipc 个作为有标注，其余为无标注。
+    注意：SAGE.py 里传入的 args.num_labeled 即此处的 ipc，表示「每类」有标数。
+    """
     list_label2indices_labeled = []
     list_label2indices_unlabeled = []
 
@@ -57,6 +71,7 @@ def partition_train(list_label2indices: list, ipc):
 
 
 def compute_clients_labeled_data_distribution(dataset, clients_indices_labeled, num_classes):
+    """统计给定索引列表上各类样本数量（供其它采样脚本使用）。"""
     dict_per_client_labeled = []
     nums_data_labeled = [0 for _ in range(num_classes)]
     for idx in clients_indices_labeled:
@@ -67,6 +82,7 @@ def compute_clients_labeled_data_distribution(dataset, clients_indices_labeled, 
 
 
 def partition_train_teach(list_label2indices: list, ipc, seed=None):
+    """教师模型等场景：每类取前 ipc 个索引（与 partition_train 不同，未拆无标池）。"""
     random_state = np.random.RandomState(0)
     list_label2indices_teach = []
 
@@ -78,6 +94,7 @@ def partition_train_teach(list_label2indices: list, ipc, seed=None):
 
 
 def partition_unlabel(list_label2indices: list, num_data_train: int):
+    """每类取 num_data_train//100 个无标样本（本主流程未用）。"""
     random_state = np.random.RandomState(0)
     list_label2indices_unlabel = []
 
@@ -88,6 +105,7 @@ def partition_unlabel(list_label2indices: list, num_data_train: int):
 
 
 def label_indices2indices(list_label2indices):
+    """将「按类分的索引列表」展平为一个列表。"""
     indices_res = []
     for indices in list_label2indices:
         indices_res.extend(indices)
@@ -98,112 +116,76 @@ def label_indices2indices(list_label2indices):
 
 
 class Indices2Dataset_labeled(Dataset):
+    """有标注分支：load(indices) 后仅迭代这些样本；弱增广 + CIFAR 归一化。"""
+
     def __init__(self, dataset):
         self.dataset = dataset
         self.indices = None
+        # 预先创建 transform，避免每次 __getitem__ 都重新创建（极慢！）
+        self.label_trans = transforms.Compose([
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomCrop(size=32, padding=int(32 * 0.125), padding_mode='reflect'),
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2471, 0.2435, 0.2616))
+        ])
 
     def load(self, indices: list):
+        """绑定当前客户端的有标索引；列表重复多次以减少 DataLoader 重建迭代器开销。"""
         self.indices = indices
-
-        ##### fix self.dataset v1 ######
         self.client_dataset = [self.dataset[i] for i in indices]
+        self.client_dataset_original_len = len(self.client_dataset)  # 保存原始长度
         self.client_dataset *= 2000
-        # 因为使用batch 128时，每次epoch都需要重新 iter(dataset) 一次，每次100ms
-        # 这里复制多次dataset，减少运行 iter 函数的次数
-        # 数字是随便定的
 
     def __getitem__(self, idx):
-        self.label_trans = transforms.Compose([
-       #     transforms.ToPILImage(),
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomCrop(size=32,
-                                  padding=int(32 * 0.125),
-                                  padding_mode='reflect'),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=(0.4914, 0.4822, 0.4465), std=(0.2471, 0.2435, 0.2616)),
-            ])
-
-        ##### fix self.dataset v1 ######
-        # idx = self.indices[idx]
-        # image, label = self.dataset[idx]
-        ##
         image, label = self.client_dataset[idx]
-
         image = self.label_trans(image)
-
         return image, label
 
     def __len__(self):
-        # return len(self.indices)
         return len(self.client_dataset)
 
 
-
 class Indices2Dataset_unlabeled_fixmatch(Dataset):
+    """无标注分支：返回 (弱增广, 强增广, 真实标签仅用于日志/分析)。"""
+
     def __init__(self, dataset):
         self.dataset = dataset
         self.indices = None
-
-    def load(self, indices: list):
-        self.indices = indices
-
-        ##### fix self.dataset v1 ######
-        self.client_dataset = [self.dataset[i] for i in self.indices]
-        self.client_dataset_len = len(self.client_dataset)
-        self.client_dataset *= 50 # save time loading data
-
-
-    def fixmatch(self, image):
+        # 预先创建 transforms，避免每次 __getitem__ 重复创建
         self.weak = transforms.Compose([
-    #        transforms.ToPILImage(),
             transforms.RandomHorizontalFlip(),
-
-            transforms.RandomCrop(size=32,
-                                  padding=int(32 * 0.125),
-                                  padding_mode='reflect'),
-    #        transforms.ToTensor(),
+            transforms.RandomCrop(size=32, padding=int(32 * 0.125), padding_mode='reflect'),
+        ])
+        self.strong = transforms.Compose([
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomCrop(size=32, padding=int(32 * 0.125), padding_mode='reflect'),
+            RandAugmentMC(n=2, m=10),
+        ])
+        self.normalize = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(mean=(0.4914, 0.4822, 0.4465), std=(0.2471, 0.2435, 0.2616))
         ])
 
-        self.strong = transforms.Compose([
-    #        transforms.ToPILImage(),
-            transforms.RandomHorizontalFlip(),
-
-            transforms.RandomCrop(size=32,
-                                  padding=int(32*0.125),
-                                  padding_mode='reflect'),
-            RandAugmentMC(n=2, m=10),
-            ])
-
-
-        self.normalize = transforms.Compose([
-    #        transforms.ToPILImage(),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=(0.4914, 0.4822, 0.4465), std=(0.2471, 0.2435, 0.2616))])
-        weak = self.weak(image)
-        strong = self.strong(image)
-        return self.normalize(weak), self.normalize(strong)
+    def load(self, indices: list):
+        """绑定当前客户端无标索引；内部列表重复若干倍以摊薄迭代器开销。"""
+        self.indices = indices
+        self.client_dataset = [self.dataset[i] for i in self.indices]
+        self.client_dataset_len = len(self.client_dataset)
+        self.client_dataset *= 50
 
     def __getitem__(self, idx):
-
-        ##### fix self.dataset v1 ######
-        # idx = self.indices[idx]
-        # image, label = self.dataset[idx]
-        ##
         image, label = self.client_dataset[idx]
-
-        image1, image2 = self.fixmatch(image)
-        return image1, image2, label
+        weak = self.weak(image)
+        strong = self.strong(image)
+        return self.normalize(weak), self.normalize(strong), label
 
     def __len__(self):
-        ##### fix self.dataset v1 ######
-        # return len(self.indices)
-        # return len(self.client_dataset)
         return self.client_dataset_len
 
 
 
-
 def list_IID_clients(list_label2indices_labeled, list_label2indices_unlabeled, num_classes, num_clients):
+    """将每类有标/无标均匀切成 num_clients 份并重组为按客户端的索引列表（本主流程未用）。"""
 
     labeled_per_client = int(len(list_label2indices_labeled[0]) / num_clients)
     unlabeled_per_client = int(len(list_label2indices_unlabeled[0]) / num_clients)
@@ -227,6 +209,7 @@ def list_IID_clients(list_label2indices_labeled, list_label2indices_unlabeled, n
 
 
 def sampling_labeled_data_non_iid(args, data_local_training, list_label2indices_labeled, num_labeled_client, alpha, seed=0):
+    """实验性：更复杂的有标 Non-IID 划分（SAGE 主脚本未调用）。"""
     list_choose_labeled = []
     list_choose_labeled_client1 = []
     list_rest_label2indices_labeled = []
@@ -267,6 +250,7 @@ def sampling_labeled_data_non_iid(args, data_local_training, list_label2indices_
 
 def sampling_unlabeled_data_non_iid(args, list_label2indices_unlabeled,
                                     num_unlabeled_client, alpha, seed=0):
+    """实验性：无标数据分块 + Dirichlet（SAGE 主脚本未调用）。"""
     list_choose_unlabeled = []
     list_unlabeled_part1 = []
     list_unlabeled_part2 = []

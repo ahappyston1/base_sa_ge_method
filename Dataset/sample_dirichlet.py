@@ -1,8 +1,19 @@
+# -*- coding: utf-8 -*-
+"""
+联邦场景下按「类别 -> 客户端」分配样本索引。
+
+- clients_indices_homo：IID，各类样本按顺序均分给各客户端。
+- clients_indices / clients_indices_unlabel*：对 (索引, 标签) 做 Dirichlet 采样，
+  使各客户端类别比例随机倾斜，模拟 Non-IID；再 balance 切成 num_clients 份。
+
+与 SAGE.py 的关系：alpha>0 时对「有标池」「无标池」分别调用 clients_indices。
+"""
 import math
 import functools
 import numpy as np
 
 def clients_indices_homo(list_label2indices: list, num_classes: int, num_clients: int):
+    """同类样本按位置切片均分，合并后得到每个客户端的索引数组列表。"""
     partition_list = []
     for index_class in range(num_classes):
         class_partition_list = []
@@ -26,6 +37,7 @@ def clients_indices_homo(list_label2indices: list, num_classes: int, num_clients
 
 
 def clients_indices(list_label2indices: list, num_classes: int, num_clients: int, non_iid_alpha: float, seed=None):
+    """Dirichlet Non-IID 划分（有标侧与 SAGE 主流程无标侧共用同一套逻辑结构）。"""
     indices2targets = []
 
 
@@ -49,6 +61,7 @@ def clients_indices(list_label2indices: list, num_classes: int, num_clients: int
 
 
 def partition_balance(idxs, num_split: int):
+    """将展平后的索引序列尽量均匀切成 num_split 段（余数前若干段多 1 个）。"""
 
     num_per_part, r = len(idxs) // num_split, len(idxs) % num_split
     parts = []
@@ -71,6 +84,10 @@ def partition_balance(idxs, num_split: int):
 
 def build_non_iid_by_dirichlet(
     seed, indices2targets, non_iid_alpha, num_classes, num_indices, n_workers):
+    """
+    核心：对每个辅助子批、每一类，用 Dirichlet(non_iid_alpha) 抽样比例，
+    把该类索引划分给多个「工作节点」，循环直到每份至少有一定最小量。
+    """
     random_state = np.random.RandomState(seed)
     n_auxi_workers = 2
     assert n_auxi_workers <= n_workers
@@ -156,6 +173,7 @@ def build_non_iid_by_dirichlet(
 
 
 def clients_indices_unlabel(list_label2indices: list, num_classes: int, num_clients: int, non_iid_alpha: float, seed=None):
+    """无标池的 Dirichlet 划分；内部 n_auxi_workers=9 等与 clients_indices 略有不同。"""
     indices2targets = []
     for label, indices in enumerate(list_label2indices):
         for idx in indices:
@@ -174,6 +192,7 @@ def clients_indices_unlabel(list_label2indices: list, num_classes: int, num_clie
 
 
 def partition_balance_unlabel(idxs, num_split: int):
+    """与 partition_balance 相同思想，用于 unlabel 分支输出。"""
 
     num_per_part, r = len(idxs) // num_split, len(idxs) % num_split
     parts = []
@@ -193,6 +212,7 @@ def partition_balance_unlabel(idxs, num_split: int):
 def build_non_iid_by_dirichlet_unlabel(
     seed, indices2targets, non_iid_alpha, num_classes, num_indices, n_workers
 ):
+    """无标版 Dirichlet 切块；n_auxi_workers 默认 9。"""
     random_state = np.random.RandomState(seed)
     n_auxi_workers = 9
     assert n_auxi_workers <= n_workers
@@ -278,6 +298,7 @@ def build_non_iid_by_dirichlet_unlabel(
 
 
 def clients_indices_unlabel1(list_label2indices: list, num_classes: int, num_clients: int, non_iid_alpha: float, seed=None):
+    """另一组超参（n_auxi_workers=10）的无标划分变体，供对比实验保留。"""
     indices2targets = []
     for label, indices in enumerate(list_label2indices):
         for idx in indices:
@@ -296,7 +317,7 @@ def clients_indices_unlabel1(list_label2indices: list, num_classes: int, num_cli
 
 
 def partition_balance_unlabel1(idxs, num_split: int):
-
+    """unlabel1 变体使用的均匀切分。"""
     num_per_part, r = len(idxs) // num_split, len(idxs) % num_split
     parts = []
     i, r_used = 0, 0
@@ -315,6 +336,7 @@ def partition_balance_unlabel1(idxs, num_split: int):
 def build_non_iid_by_dirichlet_unlabel1(
     seed, indices2targets, non_iid_alpha, num_classes, num_indices, n_workers
 ):
+    """与 build_non_iid_by_dirichlet_unlabel 类似，辅助 worker 数改为 10。"""
     random_state = np.random.RandomState(seed)
     n_auxi_workers = 10
     assert n_auxi_workers <= n_workers

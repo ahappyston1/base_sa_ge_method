@@ -57,13 +57,16 @@ Before running, please ensure the dataset paths are correctly set in `options.py
 
 ### Usage
 
-Here is an example shell script to run SAGE on CIFAR-100 :
-
 ```bash
-python SAGE.py --dataset='CIFAR100' --alpha=0.1 --gpu_id=0
-```
+# 单次实验
+bash scripts/train.sh --dataset CIFAR10 --alpha 0.1 --gpu_id 0
 
-Please replace `--dataset`, `--alpha`, and `--gpu_id` with appropriate values to customize the training configuration.
+# CIFAR-10 α=0.1 与 0.5 连续跑
+bash scripts/run_cifar10.sh --gpu_id 0
+
+# 5 轮冒烟
+bash scripts/debug.sh --gpu_id 0
+```
 
 
 

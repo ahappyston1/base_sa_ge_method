@@ -1,46 +1,110 @@
 # -*-coding:utf-8-*-
+"""
+命令行超参数集中定义。
+
+说明：部分参数（如每类标注数 num_labeled、通信轮数 num_rounds）在 fl_runner.fixmatch()
+里按数据集硬编码覆盖。本项目使用 PPFPSL 压力感知原型 + A/B/C 路由方法。
+
+YAML：可用 `--config path/to.yaml` 批量设参；合并顺序为「先读 YAML 作为默认值，再解析命令行」，
+故命令行显式传入的项会覆盖 YAML。需安装 PyYAML（见 requirements.txt）。
+"""
 import argparse
 import os
+import sys
+
+
+def _parser_destinations(parser):
+    return {
+        a.dest
+        for a in parser._actions
+        if getattr(a, 'dest', None) not in (None, 'help', 'config')
+    }
+
+
+def _yaml_path_from_argv(argv):
+    if '--config' not in argv:
+        return ''
+    i = argv.index('--config')
+    if i + 1 >= len(argv):
+        return ''
+    cand = argv[i + 1]
+    if cand.startswith('-'):
+        return ''
+    return cand
+
+
+def _apply_yaml_defaults(parser, yaml_path: str) -> None:
+    try:
+        import yaml
+    except ImportError as e:
+        raise ImportError('请安装 PyYAML: pip install PyYAML') from e
+    with open(yaml_path, 'r', encoding='utf-8') as f:
+        raw = yaml.safe_load(f)
+    if not raw:
+        return
+    dests = _parser_destinations(parser)
+    merged = {}
+    for k, v in raw.items():
+        if k == 'config' or not isinstance(k, str):
+            continue
+        if k not in dests:
+            print(f'[options] YAML 忽略未知键（非 argparse 参数）: {k}')
+            continue
+        if v is None:
+            continue
+        merged[k] = v
+    if merged:
+        parser.set_defaults(**merged)
 
 
 def args_parser():
+    """解析命令行，返回 argparse.Namespace。"""
     parser = argparse.ArgumentParser()
     path_dir = os.path.dirname(__file__)
 
-    parser.add_argument('--gpu_id', type=int, default=0)
+    parser.add_argument(
+        '--config',
+        type=str,
+        default='',
+        help='YAML 超参文件路径；与 argparse 同名字段会作为默认值，命令行可逐项覆盖。留空则不读 YAML。',
+    )
+
+    parser.add_argument('--gpu_id', type=int, default=0, help='单卡训练时使用的 CUDA 设备编号')
     parser.add_argument('--dataset', type=str, default='CIFAR100',
-                        help='CIFAR10 / CIFAR100 / SVHN / CINIC10')
+                        help='数据集：CIFAR10 / CIFAR100 / SVHN / CINIC10')
     parser.add_argument('--num_clients', type=int, default=20,
-                        help='Total number of clients in the federated learning setup')
+                        help='联邦学习中客户端总数')
     parser.add_argument('--num_online_clients', type=int, default=8,
-                        help='Number of clients participating in each communication round')
+                        help='每一轮随机参与训练的客户端数量')
+    parser.add_argument('--max_rounds', type=int, default=0,
+                        help='若大于 0 则覆盖各数据集默认的 num_rounds，便于快速调试')
     parser.add_argument('--mu', default=2, type=int,
-                        help='Number of augmentations for unlabeled samples')
+                        help='无标注分支：弱视图 1 份 + 强视图 mu 份中的 mu（与 FixMatch 一致）')
     parser.add_argument('--alpha', type=float, default=1,
-                        help='Dirichlet distribution')
+                        help='Dirichlet Non-IID 浓度；0 表示 IID，越小通常异质性越强')
     parser.add_argument('--threshold', default=0.95, type=float,
-                        help='Pseudo-label threshold')
+                        help='伪标签置信度阈值，用于 mask')
     parser.add_argument('--lambda_u', default=1, type=float,
-                        help='Coefficient of unlabeled loss')
+                        help='无监督 KL 项相对有监督 CE 的权重')
     parser.add_argument('--batch_size_local_labeled_fixmatch', type=int, default=128)
     parser.add_argument('--kappa', default=0.5, type=float,
-                        help='Hyperparameter for controlling sensitivity to confidence discrepancy in CDSC')
+                        help='历史 SAGE/CDSC 预留，当前主流程未使用')
     parser.add_argument('--local_epochs', type=int, default=5,
-                        help='local training epochs in local training')
+                        help='每轮通信中每个客户端本地训练 epoch 数')
     parser.add_argument('--batch_size_local_labeled', type=int, default=128)
     parser.add_argument('--batch_size_local_unlabeled', type=int, default=128)
     parser.add_argument('--batch_size_test', type=int, default=512)
     parser.add_argument('--lr_local_training', type=float, default=0.1)
     parser.add_argument('--lr_distillation_training', type=float, default=0.1)
 
-    # dataset path
+    # 各数据集根目录（需含 torchvision 或 CINIC 标准文件夹结构）
     parser.add_argument('--path_cifar10', type=str, default=os.path.join(path_dir, 'data/CIFAR10/'))
     parser.add_argument('--path_cifar100', type=str, default=os.path.join(path_dir, 'data/CIFAR100/'))
     parser.add_argument('--path_svhn', type=str, default=os.path.join(path_dir, 'data/SVHN/'))
     parser.add_argument('--path_cinic10', type=str, default=os.path.join(path_dir, 'data/CINIC10/'))
 
 
-    #------------- ablation study -------------#
+    #------------- 消融实验 / 其它方法预留超参 -------------#
     parser.add_argument('--SAGE_fixed_p', default=0.5, type=float,
                         help='Fixed parameter used in SAGE ablation study instead of dynamic adjustment')
     parser.add_argument('--ablation_kappa', default=2, type=float,
@@ -48,8 +112,12 @@ def args_parser():
 
     parser.add_argument('--seed', type=int, default=7)
 
+    parser.add_argument('--resume', type=str, default='',
+                        help='指定某个 .pt 续训；不填则新开实验（带时间戳，不覆盖正在跑的文件）')
+    parser.add_argument('--run_id', type=str, default='',
+                        help='实验目录名后缀；留空则用启动时间 YYYYMMDD_HHMMSS。续训同一实验时传入该 id')
 
-    # ------------- baselines -------------#
+    # ------------- 基线方法（FedProx、FedLabel、FreeMatch、FedMatch 等）预留 -------------#
     # FedProx
     parser.add_argument('--lambda_prox', default=0.001, type=float,
                         help='coefficient of FedProx')
@@ -80,6 +148,80 @@ def args_parser():
     parser.add_argument('--batch_size_label_distillation', type=int, default=128)
     parser.add_argument('--batch_size_unlabel_distillation', type=int, default=128)
 
+    # ------------- PPFPSL -------------#
+    parser.add_argument('--pp_warmup_ratio', type=float, default=0.3, help='warm-up 轮数占比 × num_rounds')
+    parser.add_argument('--pp_geom_ratio', type=float, default=0.4, help='phase2 geometry 轮数占比')
+    parser.add_argument('--tau_warmup', type=float, default=0.95, help='phase1 无标伪标签置信阈值')
+    parser.add_argument('--tau0', type=float, default=0.85, help='类自适应置信阈值基线')
+    parser.add_argument('--delta0', type=float, default=0.10, help='类自适应 margin 阈值基线')
+    parser.add_argument('--pp_a', type=float, default=0.08, help='tau 随 Norm(rho) 线性项系数')
+    parser.add_argument('--pp_b', type=float, default=0.12, help='delta 随 Norm(rho) 线性项系数')
+    parser.add_argument('--lambda_p', type=float, default=0.5, help='聚合参考原型时 A 桶权重系数')
+    parser.add_argument('--pp_lambda_mix', type=float, default=0.6, help='混合原型 lambda_mix')
+    parser.add_argument('--mu_rho', type=float, default=0.9, help='pressure EMA 系数')
+    parser.add_argument('--pp_eps', type=float, default=1e-6, help='数值稳定用 eps')
+    parser.add_argument('--pp_min_class_count', type=int, default=5, help='参与 pressure 的每类最少样本数')
+    parser.add_argument('--eta_B', type=float, default=0.60, help='B 桶可靠性阈值')
+    parser.add_argument('--w_min', type=float, default=0.05, help='A 桶样本权重下界')
+    parser.add_argument('--w_gamma', type=float, default=1.0, help='A 桶权重中置信度的幂 gamma_w')
+    parser.add_argument('--w_Tp', type=float, default=1.0, help='A 桶权重 sigmoid(m/T_p) 的温度')
+    parser.add_argument('--lambda_A', type=float, default=1.0)
+    parser.add_argument('--lambda_B', type=float, default=1.0)
+    parser.add_argument('--lambda_proto', type=float, default=0.1)
+    parser.add_argument('--pp_teacher', type=int, default=0,
+                        help='1=弱视图用冻结全局教师；0=学生弱视图（与 81% 实验一致）')
+    parser.add_argument('--pp_b_ratio_cap', type=float, default=0.0,
+                        help='B 桶占无标签上限；0 表示不截断')
+    parser.add_argument('--mu_p', type=float, default=0.99, help='本地原型 EMA')
+    parser.add_argument('--alpha0', type=float, default=0.80,
+                        help='gate=0 时 r_i 中 softmax 的权重')
+    parser.add_argument('--alpha_min', type=float, default=0.30,
+                        help='gate=1 时 r_i 中 softmax 的权重（其余为原型间隔）')
+    parser.add_argument('--alpha_max', type=float, default=0.95)
+    parser.add_argument('--pp_k0', type=float, default=0.0, help='保留项；α 现在随 gate 过渡，默认 0')
+    parser.add_argument('--pp_gamma', type=float, default=1.0, help='高压类进一步降低 α，更看间隔')
+    parser.add_argument('--pp_m0', type=float, default=0.05, help='间隔可靠性中心：m=m0 时映射为 0.5')
+    parser.add_argument('--pp_mT', type=float, default=0.08, help='间隔可靠性温度，越小对负间隔越严')
+    parser.add_argument('--pp_b_min_margin', type=float, default=0.0,
+                        help='B 要求原型间隔不低于此值；默认 0 即原型反对 ŷ 的样本进 C')
+    parser.add_argument('--pp_proto_T', type=float, default=0.1, help='prototype contrastive 温度 T')
+    parser.add_argument('--pp_phase3_geom_boost', type=float, default=0.35,
+                        help='phase3 对 tau/delta 几何项的额外放大（随 Norm）')
+    parser.add_argument('--pp_gate_anneal_ratio', type=float, default=0.15,
+                        help='warmup 结束后，将 tau/delta 从 Phase1 余弦退火到目标值的轮数占比')
+    parser.add_argument('--pp_warmup_aux_ratio', type=float, default=0.3,
+                        help='warmup 最后这段比例内逐步加入 L_proto 与 B 桶，避免 Phase1 过弱')
+    parser.add_argument('--pp_adaptive', type=int, default=1,
+                        help='1=按精度/覆盖率动态调 A/B 门槛并自动切阶段；0=固定比例')
+    parser.add_argument('--pp_adapt_ema', type=float, default=0.8, help='调度指标 EMA 系数')
+    parser.add_argument('--pp_adapt_step', type=float, default=0.008, help='每轮门槛调整步长')
+    parser.add_argument('--pp_target_a_prec', type=float, default=0.90, help='A 桶目标精度')
+    parser.add_argument('--pp_target_a_ratio', type=float, default=0.22, help='A 桶目标占比')
+    parser.add_argument('--pp_target_b_prec', type=float, default=0.75, help='B 桶目标精度')
+    parser.add_argument('--pp_warmup_min_ratio', type=float, default=0.30, help='Phase1 最少轮数占比')
+    parser.add_argument('--pp_warmup_max_ratio', type=float, default=0.40, help='Phase1 最多轮数占比')
+    parser.add_argument('--pp_geom_min_ratio', type=float, default=0.12, help='Phase2 最少轮数占比')
+    parser.add_argument('--pp_geom_max_ratio', type=float, default=0.35, help='Phase2 最多轮数占比')
+    parser.add_argument('--pp_phase1_exit_a_prec', type=float, default=0.70, help='离开 Phase1 所需 A 精度 EMA')
+    parser.add_argument('--pp_phase1_exit_acc', type=float, default=0.58, help='离开 Phase1 所需测试 Acc EMA')
+    parser.add_argument('--pp_aux_ready_a_prec', type=float, default=0.68,
+                        help='Phase1 打开 B/aux 所需 A 精度 EMA')
+    parser.add_argument('--pp_aux_ready_acc', type=float, default=0.50,
+                        help='Phase1 打开 B/aux 所需测试 Acc EMA')
+    parser.add_argument('--pp_phase2_exit_a_ratio', type=float, default=0.08, help='离开 Phase2 所需 A 占比 EMA')
+    parser.add_argument('--pp_a_ratio_cap', type=float, default=0.30, help='Phase2/3 A 桶最大占比，超出则按 score 截断')
+    parser.add_argument('--pp_a_ratio_cap_p1', type=float, default=0.40, help='Phase1 A 桶最大占比')
+    parser.add_argument('--pp_proto_a_prec', type=float, default=0.85, help='A 精度 EMA 低于此则不用 A 更新原型')
+    parser.add_argument('--pp_dirty_a_step_mult', type=float, default=3.0, help='A 又大又脏时加快收紧门槛')
+    parser.add_argument('--pp_min_c_ratio', type=float, default=0.15, help='C 占比低于此则提高 eta_B，强制拒识')
+    parser.add_argument('--hce_tau', type=float, default=0.95, help='HCE 高置信统计阈值')
+    parser.add_argument('--use_tensorboard', action='store_true', help='写入 TensorBoard 标量')
+
+    yp = _yaml_path_from_argv(sys.argv).strip()
+    if yp and os.path.isfile(yp):
+        _apply_yaml_defaults(parser, yp)
+    elif yp:
+        raise FileNotFoundError(f'--config 指定的 YAML 不存在: {yp}')
 
     args = parser.parse_args()
     return args

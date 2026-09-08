@@ -1,0 +1,26 @@
+# 数据与环境
+data/
+*.tar.gz
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.python-version
+
+# 训练产物：权重很大，不要进 git
+results/**/checkpoints/
+results/**/tensorboard/
+*.pt
+*.pth
+*.ckpt
+
+# 日志可本地留着；曲线 CSV 建议纳入版本库
+results/**/logs/
+
+# 编辑器 / 系统
+.cursor/
+.idea/
+.vscode/
+.DS_Store
+*.swp

@@ -1,7 +1,11 @@
-# code in this file is adpated from
+# -*- coding: utf-8 -*-
+# 以下实现改编自 FixMatch / RandAugment 官方相关仓库（保留原英文链接便于溯源）：
 # https://github.com/ildoonet/pytorch-randaugment/blob/master/RandAugment/augmentations.py
 # https://github.com/google-research/fixmatch/blob/master/third_party/auto_augment/augmentations.py
 # https://github.com/google-research/fixmatch/blob/master/libml/ctaugment.py
+#
+# 中文说明：本文件提供 RandAugment 的一系列 PIL 级图像变换算子，
+# 以及 RandAugmentMC（FixMatch 默认增广池 + Cutout），供无标注强增广使用。
 import logging
 import random
 
@@ -145,7 +149,7 @@ def _int_parameter(v, max_v):
 
 
 def fixmatch_augment_pool():
-    # FixMatch paper
+    # FixMatch 论文附录中的 RandAugment 操作池
     augs = [(AutoContrast, None, None),
             (Brightness, 0.9, 0.05),
             (Color, 0.9, 0.05),
@@ -164,7 +168,7 @@ def fixmatch_augment_pool():
 
 
 def my_augment_pool():
-    # Test
+    # 更激进的增广池，供 RandAugmentPC 使用（本仓库主流程用 RandAugmentMC）
     augs = [(AutoContrast, None, None),
             (Brightness, 1.8, 0.1),
             (Color, 1.8, 0.1),
@@ -185,6 +189,7 @@ def my_augment_pool():
 
 
 class RandAugmentPC(object):
+    """RandAugment 变体：从 my_augment_pool 抽 n 个操作，再叠加固定大小 Cutout。"""
     def __init__(self, n, m):
         assert n >= 1
         assert 1 <= m <= 10
@@ -203,6 +208,10 @@ class RandAugmentPC(object):
 
 
 class RandAugmentMC(object):
+    """
+    FixMatch 默认强增广：从 fixmatch_augment_pool 随机选 n 个算子，
+    幅度 v 在 [1, m) 均匀采样；最后 CutoutAbs(约半幅)。
+    """
     def __init__(self, n, m):
         assert n >= 1
         assert 1 <= m <= 10

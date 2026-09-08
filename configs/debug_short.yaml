@@ -1,0 +1,12 @@
+# 短跑调试：小轮数 + 略小 batch（仍依赖本机显存）
+# bash scripts/debug.sh --gpu_id 0
+
+dataset: CIFAR10
+max_rounds: 5
+num_clients: 8
+num_online_clients: 4
+local_epochs: 1
+batch_size_local_labeled_fixmatch: 64
+batch_size_test: 256
+pp_warmup_ratio: 0.4
+pp_geom_ratio: 0.4

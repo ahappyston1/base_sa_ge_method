@@ -1,3 +1,10 @@
+# -*- coding: utf-8 -*-
+"""
+面向小图像（32×32）的 ResNet 变体，用于本项目的分类骨干。
+
+SAGE.py 中使用 ResNet(resnet_size=8, scaling=4, num_classes=...)，即较浅的宽 ResNet；
+forward 返回 (feature, logits)，便于扩展但当前训练主要用 logits。
+"""
 from torchvision.models import resnet18, resnet34, resnet50, resnet101, resnet152
 from torch.nn import Module, Conv2d, Linear, MaxPool2d
 import math
@@ -6,6 +13,8 @@ import copy
 import torch
 
 class ResNetBase(nn.Module):
+    """ResNet 公共逻辑：残差块堆叠、BN 冻结、按数据集推断类别数（本仓库主流程传入 num_classes）。"""
+
     def _decide_num_classes(self):
         if self.dataset == "cifar10" or self.dataset == "svhn":
             return 10
@@ -76,6 +85,7 @@ class ResNetBase(nn.Module):
 
 
 def norm2d(group_norm_num_groups, planes):
+    """归一化层：指定 group_norm 时用 GN，否则 BN。"""
     if group_norm_num_groups is not None and group_norm_num_groups > 0:
         # group_norm_num_groups == planes -> InstanceNorm
         # group_norm_num_groups == 1 -> LayerNorm
@@ -212,6 +222,11 @@ class BasicBlock(nn.Module):
 
 
 class ResNet(ResNetBase):
+    """
+    自定义深度 resnet_size（满足 6n+2）与通道缩放 scaling。
+    resnet_size<44 用 BasicBlock，否则 Bottleneck（与 torchvision 风格一致）。
+    """
+
     def __init__(
         self,
         resnet_size=8,
