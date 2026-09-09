@@ -7,6 +7,7 @@ Pressure-aware + Prototype + A/B/C 路由。
 """
 from __future__ import annotations
 import math
+from collections import OrderedDict
 from typing import Any, Dict, Optional, Tuple
 
 from torchvision import datasets
@@ -18,7 +19,9 @@ from Dataset.dataset import (
     Indices2Dataset_labeled,
     Indices2Dataset_unlabeled_fixmatch,
     partition_train,
+    LABELED_LEN_MULTIPLIER,
 )
+from Dataset.normalize import to_tensor_normalize
 from Dataset.sample_dirichlet import clients_indices, clients_indices_homo
 import numpy as np
 import pandas as pd
@@ -37,42 +40,223 @@ import logging
 import os
 import csv
 import time
+import json
 
 worker_num = 4
 # 当前唯一实现的 checkpoint 标记；旧 V1/V2 权重没有此字段，不会被误续训
-METHOD_REV = 5
+METHOD_REV = 10
+
+
+def _lerp(g, a, b):
+    """g=0 取 a，g=1 取 b；a/b 可以是标量或 Tensor。"""
+    return (1.0 - g) * a + g * b
 
 
 def _run_paths(dataset, alpha, args) -> Dict[str, str]:
-    """每次实验用时间戳（或 --run_id）区分输出，避免覆盖正在跑的任务。"""
+    """一次实验的全部产物放在 results/<数据集>/runs/<run_id>_a<alpha>/ 下。
+
+    目录名即 run_id，续训时从 --resume 的父目录名反推，不再靠文件名解析。
+    """
+    import re
+
     run_id = str(getattr(args, "run_id", "") or "").strip()
     resume = str(getattr(args, "resume", "") or "").strip()
     if resume:
         resume = os.path.abspath(resume)
         if not run_id:
-            import re
-            m = re.search(r"_(\d{8}_\d{6})(?:_latest)?\.pt$", resume)
+            # 新布局：runs/<run_id>_a<alpha>/checkpoint.pt
+            d = os.path.basename(os.path.dirname(resume))
+            m = re.match(r"^(\d{8}_\d{6})", d)
+            if not m:  # 旧布局：checkpoints/PPFPSL_a0.1_<run_id>_latest.pt
+                m = re.search(r"_(\d{8}_\d{6})(?:_latest)?\.pt$", resume)
             if m:
                 run_id = m.group(1)
     if not run_id:
         run_id = time.strftime("%Y%m%d_%H%M%S")
-    stem = f"PPFPSL_a{alpha}_{run_id}"
-    result_dir = f"./results/{dataset}"
-    ckpt_dir = os.path.join(result_dir, "checkpoints")
-    log_dir = os.path.join(result_dir, "logs")
-    os.makedirs(ckpt_dir, exist_ok=True)
-    os.makedirs(log_dir, exist_ok=True)
-    os.makedirs(result_dir, exist_ok=True)
+    # %g 归一 alpha：1.0 与 1 得到同一个目录名，便于脚本预先建目录
+    run_dir = os.path.join(".", "results", str(dataset), "runs", f"{run_id}_a{float(alpha):g}")
+    os.makedirs(run_dir, exist_ok=True)
     return {
         "run_id": run_id,
-        "stem": stem,
-        "acc_path": os.path.join(result_dir, f"{stem}.csv"),
-        "metrics_path": os.path.join(result_dir, f"{stem}_metrics.csv"),
-        "ckpt_path": os.path.join(ckpt_dir, f"{stem}_latest.pt"),
+        "run_dir": run_dir,
+        "acc_path": os.path.join(run_dir, "acc.csv"),
+        "metrics_path": os.path.join(run_dir, "metrics.csv"),
+        "ckpt_path": os.path.join(run_dir, "checkpoint.pt"),
         "resume_src": resume,
-        "log_file": os.path.join(log_dir, f"{stem}.log"),
-        "tb_dir": os.path.join(result_dir, "tensorboard", stem),
+        "log_file": os.path.join(run_dir, "train.log"),
+        "tb_dir": os.path.join(run_dir, "tensorboard"),
+        "config_path": os.path.join(run_dir, "config.json"),
     }
+
+
+def apply_run_seeds(args) -> None:
+    """模型种子：torch / python / 全局 numpy。划分与在线抽样用独立 RandomState。"""
+    if getattr(args, "sample_seed", None) is None:
+        args.sample_seed = int(args.seed)
+    s = int(args.seed)
+    random.seed(s)
+    np.random.seed(s)
+    torch.manual_seed(s)
+    torch.cuda.manual_seed(s)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(s)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+def _as_index_list(indices) -> list:
+    """Dirichlet 返回 list，IID homo 返回 ndarray；统一成 Python int 列表以便 extend。"""
+    if indices is None:
+        return []
+    arr = np.asarray(indices).reshape(-1)
+    return [int(x) for x in arr.tolist()]
+
+
+def _assert_clients_can_batch(
+    list_lab: list,
+    list_unl: list,
+    args,
+) -> None:
+    """drop_last=True 时，每个客户端必须能拿出至少 1 个有标 batch 和 1 个无标 batch。"""
+    lab_bs = int(args.batch_size_local_labeled_fixmatch)
+    unl_bs = lab_bs * int(args.mu)
+    bad = []
+    for k, (lab, unl) in enumerate(zip(list_lab, list_unl)):
+        n_lab = len(lab)
+        n_unl = len(unl)
+        lab_loader_len = n_lab * int(LABELED_LEN_MULTIPLIER)
+        if n_lab < 1 or lab_loader_len < lab_bs:
+            bad.append(
+                f"client {k}: labeled={n_lab} (loader_len={lab_loader_len}) < labeled_batch={lab_bs}"
+            )
+        if n_unl < unl_bs:
+            bad.append(
+                f"client {k}: unlabeled={n_unl} < unlabeled_batch={unl_bs} (drop_last would be empty)"
+            )
+    if bad:
+        raise RuntimeError(
+            "有客户端无法形成本地 batch（drop_last=True）。请减小 batch/μ 或调整划分。\n"
+            + "\n".join(bad)
+        )
+
+
+def _metrics_row(
+    r: int,
+    phase: int,
+    gate: float,
+    acc: float,
+    best_acc: float,
+    best_round: int,
+    losses: tuple,
+    route: tuple,
+    quality: tuple,
+    proto: tuple,
+    rel: tuple,
+    knobs: tuple,
+    counts: tuple,
+) -> "OrderedDict":
+    """metrics.csv 的一行。列顺序在这里集中定义，按「先看什么」从左到右排：
+    阶段/轮次/acc/loss → 损失分解 → 最优与 gate → 路由占比 → 路由质量
+    → 原型 → 可靠性 → 门槛 → 原始计数。
+    """
+    loss, l_sup, l_a, l_b, l_proto = losses
+    a_ratio, b_ratio, c_ratio, m_a, geom_drop_rate = route
+    a_prec, b_prec, hce_rate = quality
+    p_share, p_dirty, p_a_uniq, p_lab_mass, p_a_mass, lab_mult = proto
+    rel_r, rel_m, rel_alpha = rel
+    snap, lambda_a_scale, lambda_b_scale, use_a_for_proto, cap_a, cap_b, lr = knobs
+    (cnt_u, cnt_a, cnt_b, cnt_c, pass_s, geom_drop,
+     a_total, a_correct, b_total, b_correct, hce_hc, hce_den, n_batches) = counts
+
+    row = OrderedDict()
+    # 最前面四列：阶段、轮次、精度、总损失
+    row["phase"] = int(phase)
+    row["round"] = r
+    row["acc"] = round(float(acc), 4)
+    row["loss"] = round(float(loss), 5)
+    # 损失分解，紧跟总损失
+    for k, v in (("L_sup", l_sup), ("L_A", l_a), ("L_B", l_b), ("L_proto", l_proto)):
+        row[k] = round(float(v), 5)
+    # 次要进度：历史最优与几何门控进度
+    row["best_acc"] = round(float(best_acc), 4)
+    row["best_round"] = int(best_round)
+    row["gate"] = round(float(gate), 4)
+    # 路由占比：A/B/C 三者互斥且和为 1；m_a 是通过置信门槛的比例
+    for k, v in (("a_ratio", a_ratio), ("b_ratio", b_ratio), ("c_ratio", c_ratio),
+                 ("m_a", m_a), ("geom_drop_rate", geom_drop_rate)):
+        row[k] = round(float(v), 5)
+    # 路由质量（用无标 GT，仅诊断，不参与训练与阶段决策）
+    for k, v in (("a_prec", a_prec), ("b_prec", b_prec), ("hce_rate", hce_rate)):
+        row[k] = round(float(v), 5)
+    # 原型：A 相对有标的质量占比、A 中错样本占比、去重后的 A 质量
+    for k, v in (("proto_a_share", p_share), ("proto_a_dirty", p_dirty),
+                 ("proto_a_unique", p_a_uniq), ("proto_lab_mass", p_lab_mass),
+                 ("proto_a_mass", p_a_mass), ("lab_mult", lab_mult)):
+        row[k] = round(float(v), 5)
+    # 可靠性
+    for k, v in (("rel_r", rel_r), ("rel_m", rel_m), ("rel_alpha", rel_alpha)):
+        row[k] = round(float(v), 5)
+    # 自适应门槛与开关
+    for k, v in (("tau0", snap["tau0"]), ("delta0", snap["delta0"]),
+                 ("eta_B", snap["eta_B"]), ("tau_warmup", snap["tau_warmup"]),
+                 ("cap_a", cap_a), ("cap_b", cap_b),
+                 ("lambda_A_scale", lambda_a_scale), ("lambda_B_scale", lambda_b_scale),
+                 ("use_a_for_proto", use_a_for_proto), ("lr", lr)):
+        row[k] = round(float(v), 5)
+    # 原始计数放最后，供核对上面的比例
+    for k, v in (("cnt_u", cnt_u), ("cnt_a", cnt_a), ("cnt_b", cnt_b), ("cnt_c", cnt_c),
+                 ("pass_s", pass_s), ("geom_drop", geom_drop),
+                 ("a_total", a_total), ("a_correct", a_correct),
+                 ("b_total", b_total), ("b_correct", b_correct),
+                 ("hce_hc", hce_hc), ("hce_den_hc", hce_den), ("n_batches", n_batches)):
+        row[k] = int(v)
+    return row
+
+
+def _append_metrics_row(path: str, row: "OrderedDict", first_round: bool) -> None:
+    """追加一行；表头不匹配（换了列定义）时重写文件，避免新旧列错位。"""
+    fieldnames = list(row.keys())
+    header_ok = False
+    if os.path.isfile(path) and not first_round:
+        with open(path, "r", encoding="utf8") as rf:
+            header_ok = rf.readline().strip().split(",") == fieldnames
+    mode = "a" if header_ok else "w"
+    with open(path, mode, newline="", encoding="utf8") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        if mode == "w":
+            w.writeheader()
+        w.writerow(row)
+
+
+def _write_run_config(path: str, args, extra: Dict[str, Any]) -> None:
+    cfg = {
+        "method_rev": METHOD_REV,
+        "seed_model": int(args.seed),
+        "seed_partition": int(getattr(args, "partition_seed", 0)),
+        "seed_sample": int(getattr(args, "sample_seed", args.seed)),
+        "dataset": args.dataset,
+        "alpha": extra.get("alpha"),
+        "num_rounds": int(args.num_rounds),
+        "num_clients": int(args.num_clients),
+        "num_online_clients": int(args.num_online_clients),
+        "num_labeled_per_class": int(getattr(args, "num_labeled", 0)),
+        "mu": int(args.mu),
+        "local_epochs": int(args.local_epochs),
+        "batch_labeled": int(args.batch_size_local_labeled_fixmatch),
+        # num_workers 改变增广随机流：同 seed 但不同 workers 的 run 不可逐位比较
+        "num_workers": int(getattr(args, "num_workers", 0)),
+        "pp_adaptive": int(getattr(args, "pp_adaptive", 1)),
+        "pp_a_ratio_cap": float(getattr(args, "pp_a_ratio_cap", 0)),
+        "pp_a_ratio_cap_p1": float(getattr(args, "pp_a_ratio_cap_p1", 0)),
+        "tau_warmup": float(args.tau_warmup),
+        "tau0": float(args.tau0),
+        "delta0": float(args.delta0),
+        "eta_B": float(args.eta_B),
+        "run_id": extra.get("run_id"),
+    }
+    with open(path, "w", encoding="utf8") as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
+        f.write("\n")
 
 
 # ============= PPFPSL 核心函数 =============
@@ -251,9 +435,15 @@ class AdaptiveSchedule:
     def for_round(self, r: int) -> Dict[str, float]:
         if not self.enabled:
             ph = training_phase(r, self.r_total, self.args)
-            cap = float(getattr(self.args, "pp_a_ratio_cap_p1", 0.40)) if ph == 1 else float(
-                getattr(self.args, "pp_a_ratio_cap", 0.30)
-            )
+            cap_p1 = float(getattr(self.args, "pp_a_ratio_cap_p1", 0.40))
+            cap_p2 = float(getattr(self.args, "pp_a_ratio_cap", 0.30))
+            g = gate_anneal(r, self.r_total, self.args) if ph == 2 else (0.0 if ph == 1 else 1.0)
+            if ph == 1:
+                cap = cap_p1
+            elif ph == 2:
+                cap = _lerp(g, cap_p1, cap_p2)
+            else:
+                cap = cap_p2
             return {
                 "phase": ph,
                 "gate": gate_anneal(r, self.r_total, self.args),
@@ -291,9 +481,14 @@ class AdaptiveSchedule:
         else:
             self.aux_scale = 1.0
             self.gate = 1.0
-        self.a_ratio_cap = float(getattr(args, "pp_a_ratio_cap_p1", 0.40)) if self.phase == 1 else float(
-            getattr(args, "pp_a_ratio_cap", 0.30)
-        )
+        cap_p1 = float(getattr(args, "pp_a_ratio_cap_p1", 0.40))
+        cap_p2 = float(getattr(args, "pp_a_ratio_cap", 0.30))
+        if self.phase == 1:
+            self.a_ratio_cap = cap_p1
+        elif self.phase == 2:
+            self.a_ratio_cap = _lerp(self.gate, cap_p1, cap_p2)
+        else:
+            self.a_ratio_cap = cap_p2
 
     def update_after_round(self, r: int, metrics: Dict[str, float]) -> None:
         self._ema("ema_acc", metrics.get("acc"))
@@ -311,11 +506,16 @@ class AdaptiveSchedule:
         self._maybe_advance_phase(r)
 
     def _adapt_thresholds(self) -> None:
-        """对齐 81% 实验：只按阶段切换 A cap，不改 τ/η/λ。"""
+        """对齐 81% 实验：不改 τ/η/λ。Phase2 的 A cap 随 gate 从 p1 插到 p2。"""
         args = self.args
-        self.a_ratio_cap = float(getattr(args, "pp_a_ratio_cap_p1", 0.40)) if self.phase == 1 else float(
-            getattr(args, "pp_a_ratio_cap", 0.30)
-        )
+        cap_p1 = float(getattr(args, "pp_a_ratio_cap_p1", 0.40))
+        cap_p2 = float(getattr(args, "pp_a_ratio_cap", 0.30))
+        if self.phase == 1:
+            self.a_ratio_cap = cap_p1
+        elif self.phase == 2:
+            self.a_ratio_cap = _lerp(float(self.gate), cap_p1, cap_p2)
+        else:
+            self.a_ratio_cap = cap_p2
         self.use_a_for_proto = 1.0
         self.lambda_A_scale = 1.0
         self.lambda_B_scale = 1.0
@@ -343,36 +543,24 @@ class AdaptiveSchedule:
         min_g = max(1, int(round(args.pp_geom_min_ratio * self.r_total)))
         max_g = max(min_g, int(round(args.pp_geom_max_ratio * self.r_total)))
         stayed = self._stayed(r)
-        exit_ap = float(getattr(args, "pp_phase1_exit_a_prec", 0.70))
-        exit_acc = float(getattr(args, "pp_phase1_exit_acc", 0.58))
-        exit_ar = float(getattr(args, "pp_phase2_exit_a_ratio", 0.08))
-
         if self.phase == 1:
-            ready = (
-                stayed >= min_w
-                and self.ema_a_prec is not None
-                and self.ema_a_prec >= exit_ap
-                and self.ema_acc is not None
-                and self.ema_acc >= exit_acc
-                and self.aux_scale >= 0.8
-            )
+            ready = stayed >= min_w and self.aux_scale >= 0.8
             if ready or stayed >= max_w:
                 self.acc_p1_exit = self.ema_acc
                 why = "ready" if ready else "max_warmup"
                 self.phase = 2
                 self.phase_enter_round = r + 1
-                self.last_event = f"r{r} phase1→2 ({why}, stayed={stayed}, acc={self.ema_acc:.3f}, A-prec={self.ema_a_prec:.3f})"
+                self.last_event = (
+                    f"r{r} phase1→2 ({why}, stayed={stayed}, aux={self.aux_scale:.2f})"
+                )
                 print("[Schedule]", self.last_event)
         elif self.phase == 2:
-            recovered = True
-            if self.acc_p1_exit is not None and self.ema_acc is not None:
-                recovered = self.ema_acc >= 0.97 * float(self.acc_p1_exit)
+            exit_ar = float(getattr(args, "pp_phase2_exit_a_ratio", 0.08))
             ready = (
                 stayed >= min_g
                 and self.gate >= 0.95
                 and self.ema_a_ratio is not None
                 and self.ema_a_ratio >= exit_ar
-                and recovered
             )
             if ready or stayed >= max_g:
                 why = "ready" if ready else "max_geom"
@@ -384,7 +572,7 @@ class AdaptiveSchedule:
 
 
 def _cap_bucket(in_A: torch.Tensor, score: torch.Tensor, cap: float) -> torch.Tensor:
-    """A 桶硬顶：超过 cap 占比时只保留 score 最高的那部分，其余改走 B/C。"""
+    """超过 cap 占比时只保留 score 最高的恰好 k 个（并列按 top-k 索引，不整批放行）。"""
     if cap <= 0 or (not in_A.any()):
         return in_A
     n = int(in_A.numel())
@@ -392,10 +580,165 @@ def _cap_bucket(in_A: torch.Tensor, score: torch.Tensor, cap: float) -> torch.Te
     n_a = int(in_A.sum().item())
     if n_a <= k:
         return in_A
-    sc = score.detach().clone()
-    sc = sc.masked_fill(~in_A, -1e9)
-    thresh = torch.topk(sc, k, largest=True).values[-1]
-    return in_A & (sc >= thresh)
+    candidates = torch.nonzero(in_A, as_tuple=True)[0]
+    chosen = candidates[torch.topk(score.detach()[candidates], k, largest=True).indices]
+    out = torch.zeros_like(in_A)
+    out[chosen] = True
+    return out
+
+
+def _geom_margin(
+    zw: torch.Tensor,
+    yhat: torch.Tensor,
+    p_mix: torch.Tensor,
+    mix_valid: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """本类间隔 m = sim(ŷ) - max_{c≠ŷ, valid} sim(c)。
+
+    本类原型缺失、或没有任何竞争类原型时，间隔未定义：m=0 且 geom_ok=False。
+    禁止把无效位的 -1e9 当成「极大间隔 / 高可靠」。
+    """
+    n, c = int(zw.size(0)), int(p_mix.size(0))
+    sims = zw @ p_mix.T
+    sim_pos = sims.gather(1, yhat.unsqueeze(1)).squeeze(1)
+    own_ok = mix_valid[yhat]
+    other_ok = mix_valid.unsqueeze(0).expand(n, c).clone()
+    other_ok.scatter_(1, yhat.unsqueeze(1), False)
+    has_other = other_ok.any(dim=1)
+    geom_ok = own_ok & has_other
+    max_other, _ = sims.masked_fill(~other_ok, -1e9).max(dim=-1)
+    m_i = torch.where(geom_ok, sim_pos - max_other, torch.zeros_like(sim_pos))
+    return m_i, geom_ok, own_ok
+
+
+def _route_phase1(
+    s_i: torch.Tensor,
+    tau: float,
+    eta_B: float,
+    aux_on: bool,
+    a_cap: float,
+    b_cap: float,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Phase1：只看置信度。返回 in_A, in_B, in_C, pass_s。"""
+    pass_s = s_i >= tau
+    in_A = _cap_bucket(pass_s, s_i, a_cap)
+    if aux_on:
+        in_B = _cap_bucket((~in_A) & (s_i >= eta_B), s_i, b_cap)
+    else:
+        in_B = torch.zeros_like(pass_s)
+    in_C = (~in_A) & (~in_B)
+    return in_A, in_B, in_C, pass_s
+
+
+def _route_phase23(
+    s_i: torch.Tensor,
+    m_i: torch.Tensor,
+    m_tilde: torch.Tensor,
+    r_i: torch.Tensor,
+    tau_i: torch.Tensor,
+    delta_i: torch.Tensor,
+    own_ok: torch.Tensor,
+    g_gate: float,
+    eta_B: float,
+    a_cap: float,
+    b_cap: float,
+    b_min_m: float,
+    m_floor: float = -2.0,
+    geom_ok: Optional[torch.Tensor] = None,
+) -> Dict[str, torch.Tensor]:
+    """Phase2/3：置信度 + 随 gate 接入的几何。不含 GT。
+
+    未知几何（geom_ok=False）不参与间隔门槛比较，回退为只看置信度；
+    m̃=0.5 只用于软权重，不当成 m=0 去硬筛 A/B。
+    """
+    if geom_ok is None:
+        geom_ok = torch.ones_like(s_i, dtype=torch.bool)
+    pass_s = s_i >= tau_i
+    keep_own = own_ok | (g_gate < 0.5)
+    margin_ok = (~geom_ok) | (m_i >= delta_i)
+    in_A = pass_s & margin_ok & keep_own
+    score_a = _lerp(g_gate, s_i, s_i * m_tilde)
+    in_A = _cap_bucket(in_A, score_a, a_cap)
+    b_score = _lerp(g_gate, s_i, r_i)
+    b_m_thr = _lerp(g_gate, m_floor, b_min_m)
+    b_margin_ok = (~geom_ok) | (m_i >= b_m_thr)
+    in_B = _cap_bucket((~in_A) & (b_score >= eta_B) & b_margin_ok, b_score, b_cap)
+    in_C = (~in_A) & (~in_B)
+    fail_geom = pass_s & geom_ok & ~((m_i >= delta_i) & keep_own)
+    return {
+        "in_A": in_A,
+        "in_B": in_B,
+        "in_C": in_C,
+        "pass_s": pass_s,
+        "fail_geom": fail_geom,
+        "score_a": score_a,
+        "b_score": b_score,
+    }
+
+
+@torch.no_grad()
+def _unique_a_mass(
+    sample_ids: torch.Tensor,
+    yhat: torch.Tensor,
+    weights: torch.Tensor,
+    num_classes: int,
+) -> torch.Tensor:
+    """服务器 A 侧有效质量：只统计进入 A 的访问。
+
+    对每个样本 ID、每个被命中的类 c：平均权重 = (该类进 A 的权重之和) / (该类进 A 的次数)。
+    分母是「进 A 且预测为 c 的次数」，不是该样本的全部无标访问次数。
+    再把该样本归到平均权重最高的类，贡献那个平均值。
+
+    有标样本若被并入无标 loader 并进入 A，会同时进入 |L| 与 Auniq（双重加权），
+    不是「独立样本只计一次」。本地原型向量仍用训练期累计特征。
+    """
+    out = torch.zeros(num_classes, dtype=torch.float64)
+    if sample_ids.numel() == 0:
+        return out.float()
+    ids = sample_ids.detach().reshape(-1).cpu()
+    cls = yhat.detach().reshape(-1).cpu()
+    w = weights.detach().reshape(-1).cpu().to(torch.float64)
+    key = ids.to(torch.int64) * int(num_classes) + cls.to(torch.int64)
+    uniq, inv = torch.unique(key, return_inverse=True)
+    w_sum = torch.zeros(uniq.numel(), dtype=torch.float64)
+    n_sum = torch.zeros(uniq.numel(), dtype=torch.float64)
+    w_sum.scatter_add_(0, inv, w)
+    n_sum.scatter_add_(0, inv, torch.ones_like(w))
+    mean_w = w_sum / n_sum.clamp_min(1.0)
+    sid = uniq // int(num_classes)
+    cc = uniq % int(num_classes)
+    order = torch.argsort(sid)
+    sid_s = sid[order]
+    cc_s = cc[order]
+    mw_s = mean_w[order]
+    i = 0
+    n = int(sid_s.numel())
+    while i < n:
+        j = i + 1
+        while j < n and int(sid_s[j]) == int(sid_s[i]):
+            j += 1
+        sl = slice(i, j)
+        pick = int(torch.argmax(mw_s[sl]).item())
+        out[int(cc_s[sl][pick])] += float(mw_s[sl][pick])
+        i = j
+    return out.float()
+
+
+def _unlabeled_ab_losses(
+    logs: torch.Tensor,
+    logw: torch.Tensor,
+    yhat: torch.Tensor,
+    in_A: torch.Tensor,
+    in_B: torch.Tensor,
+    w_A: torch.Tensor,
+    w_B: torch.Tensor,
+    T: float,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """A: 可靠性权重 detach 后乘 CE；B: 弱→强 KL。L_proto 不在此。"""
+    ce = F.cross_entropy(logs, yhat, reduction="none")
+    L_A = (w_A.detach() * ce).mean()
+    L_B = _consistency_kl(logw, logs, in_B, T, weights=w_B)
+    return L_A, L_B
 
 
 def _consistency_kl(
@@ -418,7 +761,7 @@ def _consistency_kl(
 
 
 def norm_rho_client(rho_bar: torch.Tensor, proto_valid: torch.Tensor, eps: float) -> torch.Tensor:
-    """客户端内对有效类的 rho_bar 做 min-max 归一化到 [0,1]。"""
+    """对 proto_valid 类做 min-max。调用方应传入 rho_valid（已有压力估计），不要用 loc_valid。"""
     c = rho_bar.shape[0]
     out = torch.full((c,), 0.5, device=rho_bar.device, dtype=rho_bar.dtype)
     active = proto_valid.clone()
@@ -575,6 +918,7 @@ class LocalPPFPSL:
             inited = bool(client_state.get("inited", False))
 
         self.model.load_state_dict(global_params)
+        self.optimizer.state.clear()
         self.model.train()
         use_teacher = bool(int(getattr(args, "pp_teacher", 0)))
         if use_teacher:
@@ -608,9 +952,14 @@ class LocalPPFPSL:
             delta0_eff = float(args.delta0)
             eta_B_eff = float(args.eta_B)
             tau_warmup_eff = float(args.tau_warmup)
-            a_ratio_cap = float(getattr(args, "pp_a_ratio_cap_p1", 0.40)) if phase == 1 else float(
-                getattr(args, "pp_a_ratio_cap", 0.30)
-            )
+            cap_p1 = float(getattr(args, "pp_a_ratio_cap_p1", 0.40))
+            cap_p2 = float(getattr(args, "pp_a_ratio_cap", 0.30))
+            if phase == 1:
+                a_ratio_cap = cap_p1
+            elif phase == 2:
+                a_ratio_cap = _lerp(g_gate, cap_p1, cap_p2)
+            else:
+                a_ratio_cap = cap_p2
             b_ratio_cap = float(getattr(args, "pp_b_ratio_cap", 0.0))
             use_a_for_proto = True
             lambda_A_scale = 1.0
@@ -623,13 +972,18 @@ class LocalPPFPSL:
             delta0_eff = float(sched["delta0"])
             eta_B_eff = float(sched["eta_B"])
             tau_warmup_eff = float(sched["tau_warmup"])
-            a_ratio_cap = float(sched.get("a_ratio_cap", getattr(args, "pp_a_ratio_cap", 0.30)))
+            cap_p1 = float(getattr(args, "pp_a_ratio_cap_p1", 0.40))
+            cap_p2 = float(getattr(args, "pp_a_ratio_cap", 0.30))
+            a_ratio_cap = float(sched.get("a_ratio_cap", cap_p2))
+            if phase == 2:
+                a_ratio_cap = _lerp(g_gate, cap_p1, cap_p2)
             b_ratio_cap = float(sched.get("b_ratio_cap", getattr(args, "pp_b_ratio_cap", 0.0)))
             use_a_for_proto = float(sched.get("use_a_for_proto", 1.0)) > 0.5
             lambda_A_scale = float(sched.get("lambda_A_scale", 1.0))
             lambda_B_scale = float(sched.get("lambda_B_scale", 1.0))
         rho_bar_in = rho_bar.clone()
-        norm_rho_in = norm_rho_client(rho_bar_in, loc_valid, args.pp_eps)
+        # 只对已有压力估计的类做 min-max；未更新类保持 0.5，避免 rho=0 的 loc_valid 类拉歪 Norm
+        norm_rho_in = norm_rho_client(rho_bar_in, rho_valid, args.pp_eps)
 
         z_labeled_sum = torch.zeros(args.num_classes, self.dim, device=self.device)
         z_labeled_cnt = torch.zeros(args.num_classes, device=self.device)
@@ -637,22 +991,32 @@ class LocalPPFPSL:
         w_a_sum = torch.zeros(args.num_classes, device=self.device)
         intra_num = torch.zeros(args.num_classes, device=self.device)
         intra_den = torch.zeros(args.num_classes, device=self.device)
+        a_id_chunks = []
+        a_cls_chunks = []
+        a_w_chunks = []
 
+        # 增广在 CPU 上是主瓶颈（单进程约 265ms/step，GPU 前反向约 23ms/step）。
+        # loader 每客户端重建，故不用 persistent_workers；worker 由 torch 按
+        # base_seed+worker_id 播种，随机流仍受 --seed 控制。
+        nw = max(0, int(getattr(args, "num_workers", 0)))
+        loader_kw = dict(num_workers=nw, pin_memory=True)
+        if nw > 0:
+            loader_kw["prefetch_factor"] = 4
+            # loader 只服务当前客户端，但要跨 local_epochs 复用，避免反复起停 worker
+            loader_kw["persistent_workers"] = True
         lab_loader = DataLoader(
             data_client_labeled,
             batch_size=args.batch_size_local_labeled_fixmatch,
             shuffle=True,
             drop_last=True,
-            num_workers=0,
-            pin_memory=True,
+            **loader_kw,
         )
         u_loader = DataLoader(
             data_client_unlabeled,
             batch_size=args.batch_size_local_labeled_fixmatch * args.mu,
             shuffle=True,
             drop_last=True,
-            num_workers=0,
-            pin_memory=True,
+            **loader_kw,
         )
 
         log_acc = {
@@ -688,6 +1052,9 @@ class LocalPPFPSL:
             "r_mean": 0.0,
             "m_mean": 0.0,
             "alpha_t": 0.0,
+            "pass_s": 0,
+            "geom_drop": 0,
+            "proto_a_wrong": 0.0,
         }
 
         # 使用原始数据集长度（未放大），避免重复迭代50倍
@@ -695,9 +1062,12 @@ class LocalPPFPSL:
         local_iter = max(1, int(real_unlabeled_len / args.batch_size_local_labeled_fixmatch))
         
 
+        # iter() 提到 epoch 外：每个 epoch 只有 local_iter 步，与 worker 预取量同量级，
+        # 每 epoch 重建迭代器会把已预取的 batch 全部丢掉（实测取数开销多 1/3）。
+        # 总步数仍是 local_epochs × local_iter，未改变训练步数。
+        it_l = iter(lab_loader)
+        it_u = iter(u_loader)
         for _local_epoch in range(args.local_epochs):
-            it_l = iter(lab_loader)
-            it_u = iter(u_loader)
             for _step in range(local_iter):
                 try:
                     x, y = next(it_l)
@@ -705,15 +1075,17 @@ class LocalPPFPSL:
                     it_l = iter(lab_loader)
                     x, y = next(it_l)
                 try:
-                    uw, us, y_u_gt = next(it_u)
+                    u_batch = next(it_u)
                 except StopIteration:
                     it_u = iter(u_loader)
-                    uw, us, y_u_gt = next(it_u)
+                    u_batch = next(it_u)
+                uw, us, y_u_gt, u_ids = u_batch
 
                 x, y = x.to(self.device, non_blocking=True), y.to(self.device, non_blocking=True)
                 uw = uw.to(self.device, non_blocking=True)
                 us = us.to(self.device, non_blocking=True)
                 y_u_gt = y_u_gt.to(self.device, non_blocking=True)
+                u_ids = u_ids.to(self.device, non_blocking=True)
 
                 z_x, logits_x = self._forward_z_logits(x)
                 L_sup = F.cross_entropy(logits_x, y)
@@ -748,18 +1120,24 @@ class LocalPPFPSL:
                 s_i, yhat = probs.max(dim=-1)
 
                 if phase == 1:
-                    mask = _cap_bucket(s_i >= tau_warmup_eff, s_i, a_ratio_cap)
-                    ce_u = F.cross_entropy(logs, yhat, reduction="none")
-                    L_A = (ce_u * mask.float()).mean()
-                    if aux_scale > 1e-6:
-                        in_B = _cap_bucket((~mask) & (s_i >= eta_B_eff), s_i, b_ratio_cap)
-                        L_B = _consistency_kl(logw, logs, in_B, args.T, weights=s_i)
-                    else:
-                        in_B = torch.zeros_like(mask)
-                        L_B = logw.new_zeros(())
+                    in_A, in_B, in_C, pass_s = _route_phase1(
+                        s_i,
+                        tau_warmup_eff,
+                        eta_B_eff,
+                        aux_scale > 1e-6,
+                        a_ratio_cap,
+                        b_ratio_cap,
+                    )
+                    mask = in_A
+                    w_A = mask.float()
+                    L_A, L_B = _unlabeled_ab_losses(
+                        logs, logw, yhat, in_A, in_B, w_A, s_i, args.T
+                    )
                     log_acc["r_mean"] += float(s_i.mean().item())
                     log_acc["m_mean"] += 0.0
                     log_acc["alpha_t"] += 1.0
+                    log_acc["pass_s"] += int(pass_s.sum().item())
+                    log_acc["geom_drop"] += 0
                     with torch.no_grad():
                         if mask.any():
                             correct = (yhat[mask] == y_u_gt[mask]).float()
@@ -772,6 +1150,12 @@ class LocalPPFPSL:
                             zw_a = zw[mask].detach()
                             cc = yhat[mask]
                             wi = (s_i[mask] ** args.w_gamma).clamp(args.w_min, 1.0)
+                            a_id_chunks.append(u_ids[mask].detach())
+                            a_cls_chunks.append(yhat[mask].detach())
+                            a_w_chunks.append(wi.detach())
+                            log_acc["proto_a_wrong"] += float(
+                                wi[yhat[mask] != y_u_gt[mask]].sum().item()
+                            )
                             for cls in range(args.num_classes):
                                 mm = cc == cls
                                 if mm.any():
@@ -780,7 +1164,7 @@ class LocalPPFPSL:
                     log_acc["cnt_u"] += yhat.numel()
                     log_acc["cnt_a"] += mask.sum()
                     log_acc["cnt_b"] += in_B.sum()
-                    log_acc["cnt_c"] += yhat.numel() - mask.sum() - in_B.sum()
+                    log_acc["cnt_c"] += in_C.sum()
                     hce = (yhat != y_u_gt) & mask
                     log_acc["hce_all"] += (yhat != y_u_gt).sum()
                     log_acc["hce_hc"] += hce.sum()
@@ -799,45 +1183,51 @@ class LocalPPFPSL:
                         tau_c = tau0_eff + args.pp_a * nr * boost
                         delta_c = delta0_eff + args.pp_b * nr * boost
 
-                    # 从 warmup 门槛余弦插值到类自适应门槛；margin 从 0 拉到 delta_c
-                    tau_i = (1.0 - g_gate) * tau_warmup_eff + g_gate * tau_c[yhat]
-                    delta_i = g_gate * delta_c[yhat]
+                    m_floor = -2.0
+                    tau_i = _lerp(g_gate, tau_warmup_eff, tau_c[yhat])
+                    delta_i = _lerp(g_gate, m_floor, delta_c[yhat])
 
-                    sims = zw @ p_mix.T
-                    sim_pos = sims.gather(1, yhat.unsqueeze(1)).squeeze(1)
-                    sims_masked = sims.clone()
-                    sims_masked[torch.arange(yhat.numel(), device=self.device), yhat] = -1e9
-                    sims_masked = sims_masked.masked_fill(~mix_valid.unsqueeze(0), -1e9)
-                    max_other, _ = sims_masked.max(dim=-1)
-                    m_i = sim_pos - max_other
-
-                    own_ok = loc_valid[yhat] | p_ref_valid[yhat]
+                    m_i, geom_ok, own_ok = _geom_margin(zw, yhat, p_mix, mix_valid)
                     m0 = float(getattr(args, "pp_m0", 0.05))
                     mT = float(getattr(args, "pp_mT", 0.08))
                     m_tilde = _margin_reliability(m_i, m0, mT)
+                    m_tilde = torch.where(geom_ok, m_tilde, torch.full_like(m_tilde, 0.5))
                     alpha_t = _blend_alpha(g_gate, nr[yhat], args)
                     r_i = alpha_t * s_i + (1.0 - alpha_t) * m_tilde
 
-                    # gate 过半后缺原型的类不能进 A，改由 r_i 决定 B/C
-                    in_A = (s_i >= tau_i) & (m_i >= delta_i) & (own_ok | (g_gate < 0.5))
-                    in_A = _cap_bucket(in_A, s_i * m_tilde, a_ratio_cap)
-                    b_min_m = float(getattr(args, "pp_b_min_margin", 0.0))
-                    in_B = _cap_bucket(
-                        (~in_A) & (r_i >= eta_B_eff) & (m_i >= b_min_m),
+                    routed = _route_phase23(
+                        s_i,
+                        m_i,
+                        m_tilde,
                         r_i,
+                        tau_i,
+                        delta_i,
+                        own_ok,
+                        g_gate,
+                        eta_B_eff,
+                        a_ratio_cap,
                         b_ratio_cap,
+                        float(getattr(args, "pp_b_min_margin", 0.0)),
+                        m_floor,
+                        geom_ok,
                     )
-                    in_C = (~in_A) & (~in_B)
+                    in_A, in_B, in_C = routed["in_A"], routed["in_B"], routed["in_C"]
+                    pass_s, fail_geom = routed["pass_s"], routed["fail_geom"]
+                    b_score = routed["b_score"]
 
+                    w_geom = (s_i ** args.w_gamma * m_tilde).clamp(args.w_min, 1.0)
                     w_full = torch.zeros_like(s_i)
                     if in_A.any():
-                        w_full[in_A] = (s_i[in_A] ** args.w_gamma * m_tilde[in_A]).clamp(args.w_min, 1.0)
-                    ce_u = F.cross_entropy(logs, yhat, reduction="none")
-                    L_A = (w_full * ce_u).mean()
-                    L_B = _consistency_kl(logw, logs, in_B, args.T, weights=r_i)
+                        w_full[in_A] = _lerp(g_gate, torch.ones_like(w_geom[in_A]), w_geom[in_A])
+                    # A 的可靠性权重不反传；有标 L_proto 仍通过原型对比更新特征
+                    L_A, L_B = _unlabeled_ab_losses(
+                        logs, logw, yhat, in_A, in_B, w_full, b_score, args.T
+                    )
                     log_acc["r_mean"] += float(r_i.mean().item())
                     log_acc["m_mean"] += float(m_i.mean().item())
                     log_acc["alpha_t"] += float(alpha_t.mean().item())
+                    log_acc["pass_s"] += int(pass_s.sum().item())
+                    log_acc["geom_drop"] += int(fail_geom.sum().item())
 
                     log_acc["cnt_u"] += yhat.numel()
                     log_acc["cnt_a"] += in_A.sum()
@@ -858,7 +1248,13 @@ class LocalPPFPSL:
                         if use_a_for_proto and in_A.any():
                             zw_a = zw[in_A]
                             cc = yhat[in_A]
-                            wi = (s_i[in_A] ** args.w_gamma * m_tilde[in_A]).clamp(args.w_min, 1.0)
+                            wi = w_full[in_A]
+                            a_id_chunks.append(u_ids[in_A].detach())
+                            a_cls_chunks.append(yhat[in_A].detach())
+                            a_w_chunks.append(wi.detach())
+                            log_acc["proto_a_wrong"] += float(
+                                wi[yhat[in_A] != y_u_gt[in_A]].sum().item()
+                            )
                             sim_pa = (zw_a * p_loc[cc]).sum(-1)
                             intra_num.scatter_add_(0, cc, wi * (1.0 - sim_pa))
                             intra_den.scatter_add_(0, cc, wi)
@@ -885,6 +1281,10 @@ class LocalPPFPSL:
                 log_acc["L_B"] += float(L_B.detach().item()) if torch.is_tensor(L_B) else L_B
                 log_acc["L_proto"] += float(L_proto.detach().item()) if torch.is_tensor(L_proto) else L_proto
                 log_acc["n_batches"] += 1
+
+        # persistent_workers 的进程随 loader 释放；显式关掉，避免多客户端叠加
+        del it_l, it_u
+        del lab_loader, u_loader
 
         rho_new = rho_bar.clone()
         rho_v_new = rho_valid.clone()
@@ -930,7 +1330,17 @@ class LocalPPFPSL:
                 p_new[cls] = mean_z
                 loc_new[cls] = True
 
-        w_agg = labeled_counts.to(self.device) + args.lambda_p * w_a_sum
+        if a_id_chunks:
+            w_a_unique = _unique_a_mass(
+                torch.cat(a_id_chunks),
+                torch.cat(a_cls_chunks),
+                torch.cat(a_w_chunks),
+                args.num_classes,
+            ).to(self.device)
+        else:
+            w_a_unique = torch.zeros(args.num_classes, device=self.device)
+        w_agg = labeled_counts.to(self.device) + args.lambda_p * w_a_unique
+        # |L| 为独立有标计数；Auniq 含无标 loader 中进 A 的样本（有标并入无标时会双重加权）
 
         log_final = {}
         for k, v in log_acc.items():
@@ -955,6 +1365,14 @@ class LocalPPFPSL:
                 log_final[k] = int(v.item())
             else:
                 log_final[k] = v
+        lab_mass = float(z_labeled_cnt.sum().item())
+        a_mass = float(w_a_sum.sum().item())
+        lab_uniq = float(labeled_counts.sum().item())
+        log_final["proto_lab"] = lab_mass
+        log_final["proto_a"] = a_mass
+        log_final["proto_a_unique"] = float(w_a_unique.sum().item())
+        log_final["lab_mult"] = lab_mass / max(lab_uniq, 1.0)
+        log_final["u_seen"] = int(log_acc.get("cnt_u", 0))
 
         new_state = {
             "rho_bar": rho_new.detach().cpu(),
@@ -1016,6 +1434,7 @@ class Global(object):
 
     def __init__(self, args):
         self.gpu_id = args.gpu_id
+        self.num_workers = max(0, int(getattr(args, "num_workers", 0)))
         self.model = ResNet(
             resnet_size=8,
             scaling=4,
@@ -1049,7 +1468,12 @@ class Global(object):
         self.model.load_state_dict(fedavg_params)
         self.model.eval()
         with no_grad():
-            test_loader = DataLoader(data_test, batch_size_test)
+            test_loader = DataLoader(
+                data_test,
+                batch_size_test,
+                num_workers=min(4, self.num_workers),
+                pin_memory=True,
+            )
             num_corrects = 0
             for data_batch in test_loader:
                 images, labels = data_batch
@@ -1067,6 +1491,7 @@ class Global(object):
 def fixmatch(alpha):
     """一次完整联邦训练实验。"""
     args = args_parser()
+    apply_run_seeds(args)
     paths = _run_paths(args.dataset, alpha, args)
 
     logging.basicConfig(
@@ -1076,10 +1501,8 @@ def fixmatch(alpha):
     )
     print(
         f'[Run] id={paths["run_id"]}\n'
-        f'  acc={paths["acc_path"]}\n'
-        f'  metrics={paths["metrics_path"]}\n'
-        f'  ckpt={paths["ckpt_path"]}\n'
-        f'  log={paths["log_file"]}'
+        f'  目录={paths["run_dir"]}\n'
+        f'  acc.csv / metrics.csv / config.json / train.log / checkpoint.pt'
     )
     logging.info(
         'run_id=%s acc=%s metrics=%s ckpt=%s',
@@ -1090,12 +1513,7 @@ def fixmatch(alpha):
         args.num_classes = 10
         args.num_labeled = 500
         args.num_rounds = 300
-        transform_test = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-            ]
-        )
+        transform_test = to_tensor_normalize("CIFAR10")
         data_local_training = datasets.CIFAR10(args.path_cifar10, train=True, download=True, transform=None)
         data_global_test = datasets.CIFAR10(args.path_cifar10, train=False, transform=transform_test)
 
@@ -1103,12 +1521,7 @@ def fixmatch(alpha):
         args.num_classes = 100
         args.num_labeled = 50
         args.num_rounds = 500
-        transform_test = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761)),
-            ]
-        )
+        transform_test = to_tensor_normalize("CIFAR100")
         data_local_training = datasets.CIFAR100(args.path_cifar100, train=True, download=True, transform=None)
         data_global_test = datasets.CIFAR100(args.path_cifar100, train=False, transform=transform_test)
 
@@ -1116,12 +1529,7 @@ def fixmatch(alpha):
         args.num_classes = 10
         args.num_labeled = 460
         args.num_rounds = 150
-        transform_test = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize((0.4377, 0.4438, 0.4728), (0.1980, 0.2010, 0.1970)),
-            ]
-        )
+        transform_test = to_tensor_normalize("SVHN")
         data_local_training = datasets.SVHN(args.path_svhn, split='train', download=True, transform=None)
         data_global_test = datasets.SVHN(args.path_svhn, split='test', transform=transform_test, download=True)
 
@@ -1129,12 +1537,7 @@ def fixmatch(alpha):
         args.num_classes = 10
         args.num_labeled = 900
         args.num_rounds = 400
-        transform_test = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize((0.4789, 0.4723, 0.4305), (0.2421, 0.2383, 0.2587)),
-            ]
-        )
+        transform_test = to_tensor_normalize("CINIC10")
         data_local_training = CINIC10(root=args.path_cinic10, split='train', transform=None)
         data_global_test = CINIC10(root=args.path_cinic10, split='test', transform=transform_test)
 
@@ -1146,6 +1549,30 @@ def fixmatch(alpha):
 
     if getattr(args, 'max_rounds', 0) and args.max_rounds > 0:
         args.num_rounds = args.max_rounds
+
+    _hp = (
+        f"[HParams] METHOD_REV={METHOD_REV} adaptive={int(getattr(args,'pp_adaptive',1))} "
+        f"capA={getattr(args,'pp_a_ratio_cap_p1',0)}/{getattr(args,'pp_a_ratio_cap',0)} "
+        f"capB={getattr(args,'pp_b_ratio_cap',0)} "
+        f"warmup=[{getattr(args,'pp_warmup_min_ratio',0)},{getattr(args,'pp_warmup_max_ratio',0)}] "
+        f"aux_ratio={getattr(args,'pp_warmup_aux_ratio',0)} "
+        f"geom=[{getattr(args,'pp_geom_min_ratio',0)},{getattr(args,'pp_geom_max_ratio',0)}] "
+        f"gate_anneal={getattr(args,'pp_gate_anneal_ratio',0)} "
+        f"p2_exit_A={getattr(args,'pp_phase2_exit_a_ratio',0)} "
+        f"tau_w={args.tau_warmup} tau0={args.tau0} d0={args.delta0} etaB={args.eta_B} "
+        f"pp_b={args.pp_b} p3_boost={getattr(args,'pp_phase3_geom_boost',0)} "
+        f"teacher={getattr(args,'pp_teacher',0)} mu_p={args.mu_p} "
+        f"lA={args.lambda_A} lB={args.lambda_B} lP={args.lambda_proto} "
+        f"seed_model={args.seed} seed_partition={getattr(args,'partition_seed',0)} "
+        f"seed_sample={getattr(args,'sample_seed', args.seed)} "
+        f"workers={getattr(args,'num_workers',0)}"
+    )
+    print(_hp)
+    _write_run_config(
+        paths["config_path"],
+        args,
+        {"alpha": alpha, "run_id": paths["run_id"]},
+    )
 
     print(
         'dataset:{dataset}\n'
@@ -1166,11 +1593,14 @@ def fixmatch(alpha):
         )
     )
 
-    random_state = np.random.RandomState(args.seed)
+    random_state = np.random.RandomState(int(getattr(args, "sample_seed", args.seed)))
+    partition_rng = np.random.RandomState(int(getattr(args, "partition_seed", 0)))
 
     list_label2indices = classify_label(data_local_training, args.num_classes)
 
-    list_label2indices_labeled, list_label2indices_unlabeled = partition_train(list_label2indices, args.num_labeled)
+    list_label2indices_labeled, list_label2indices_unlabeled = partition_train(
+        list_label2indices, args.num_labeled, rng=partition_rng
+    )
 
     if alpha == 0:
         list_client2indices_labeled = clients_indices_homo(
@@ -1189,15 +1619,18 @@ def fixmatch(alpha):
             num_classes=args.num_classes,
             num_clients=args.num_clients,
             non_iid_alpha=alpha,
-            seed=0,
+            seed=int(getattr(args, "partition_seed", 0)),
         )
         list_client2indices_unlabeled = clients_indices(
             list_label2indices=list_label2indices_unlabeled,
             num_classes=args.num_classes,
             num_clients=args.num_clients,
             non_iid_alpha=alpha,
-            seed=0,
+            seed=int(getattr(args, "partition_seed", 0)),
         )
+
+    list_client2indices_labeled = [_as_index_list(x) for x in list_client2indices_labeled]
+    list_client2indices_unlabeled = [_as_index_list(x) for x in list_client2indices_unlabeled]
 
     show_clients_data_distribution(
         data_local_training, list_client2indices_labeled, list_client2indices_unlabeled, args.num_classes
@@ -1205,6 +1638,15 @@ def fixmatch(alpha):
 
     for client in range(args.num_clients):
         list_client2indices_unlabeled[client].extend(list_client2indices_labeled[client])
+
+    _assert_clients_can_batch(list_client2indices_labeled, list_client2indices_unlabeled, args)
+
+    # FedAvg 权重：原始样本索引并集。有标已被 extend 进无标列表，求和会重复计数；
+    # 也不能用 load() 后的 len(dataset)（有标内部复制约 2000 倍）。
+    client_n_samples = [
+        len(set(list_client2indices_labeled[k]) | set(list_client2indices_unlabeled[k]))
+        for k in range(args.num_clients)
+    ]
 
     global_model = Global(args)
     local_ppfpsl = LocalPPFPSL(args)
@@ -1227,8 +1669,10 @@ def fixmatch(alpha):
         except Exception as e:
             print('TensorBoard 不可用，跳过:', e)
 
-    indices2data_labeled = Indices2Dataset_labeled(data_local_training)
-    indices2data_unlabeled = Indices2Dataset_unlabeled_fixmatch(data_local_training)
+    indices2data_labeled = Indices2Dataset_labeled(data_local_training, dataset_name=args.dataset)
+    indices2data_unlabeled = Indices2Dataset_unlabeled_fixmatch(
+        data_local_training, dataset_name=args.dataset
+    )
 
     ckpt_path = paths["ckpt_path"]
     load_ckpt = paths["resume_src"] or ckpt_path
@@ -1238,6 +1682,8 @@ def fixmatch(alpha):
         f"[Schedule] adaptive={int(schedule.enabled)} "
         f"warmup=[{getattr(args, 'pp_warmup_min_ratio', 0.15):.2f},{getattr(args, 'pp_warmup_max_ratio', 0.40):.2f}] "
         f"geom=[{getattr(args, 'pp_geom_min_ratio', 0.12):.2f},{getattr(args, 'pp_geom_max_ratio', 0.35):.2f}] "
+        f"capA={getattr(args, 'pp_a_ratio_cap_p1', 0):.2f}/{getattr(args, 'pp_a_ratio_cap', 0):.2f} "
+        f"geom_rel=Phase2 gate 0→1 over {max(1, int(round(getattr(args, 'pp_gate_anneal_ratio', 0.15) * args.num_rounds)))} rounds "
         f"target A-prec={getattr(args, 'pp_target_a_prec', 0.90)} A-ratio={getattr(args, 'pp_target_a_ratio', 0.22)}"
     )
     print(sched_msg)
@@ -1285,7 +1731,7 @@ def fixmatch(alpha):
             indices2data_unlabeled.load(list_client2indices_unlabeled[client])
             data_client_unlabeled = indices2data_unlabeled
 
-            list_nums_local_data.append(len(data_client_labeled) + len(data_client_unlabeled))
+            list_nums_local_data.append(client_n_samples[client])
             
             lc = labeled_counts_per_client[client].to(torch.device('cuda', args.gpu_id))
             local_params, st_new, up = local_ppfpsl.train_round(
@@ -1297,7 +1743,7 @@ def fixmatch(alpha):
                 global_model.p_ref_valid,
                 r,
                 client_states[client],
-                lc,
+                lc,                   
                 snap,
             )
             client_states[client] = st_new
@@ -1348,6 +1794,8 @@ def fixmatch(alpha):
             cu = sum(int(row.get('cnt_u', 0)) for row in log_rows)
             ca = sum(int(row.get('cnt_a', 0)) for row in log_rows)
             cb = sum(int(row.get('cnt_b', 0)) for row in log_rows)
+            cc = sum(int(row.get('cnt_c', 0)) for row in log_rows)
+            n_batches = sum(int(row.get('n_batches', 0)) for row in log_rows)
             a_ratio = ca / cu if cu > 0 else 0
             b_ratio = cb / cu if cu > 0 else 0
             c_ratio = 1.0 - a_ratio - b_ratio
@@ -1358,11 +1806,28 @@ def fixmatch(alpha):
             btot = sum(int(row.get('b_total', 0)) for row in log_rows)
             bcor = sum(int(row.get('b_correct', 0)) for row in log_rows)
             b_prec = bcor / btot if btot > 0 else 0
+            # 高置信错误率：s_i≥hce_tau 的样本里伪标签错掉的比例（仅诊断）
+            hce_hc = sum(int(row.get('hce_hc', 0)) for row in log_rows)
+            hce_den = sum(int(row.get('hce_den_hc', 0)) for row in log_rows)
+            hce_rate = hce_hc / hce_den if hce_den > 0 else 0.0
             g_avg = _mean('gate')
             r_mean = _mean('r_mean')
             m_mean = _mean('m_mean')
             alpha_mean = _mean('alpha_t')
-            proto_a = float(snap.get('use_a_for_proto', 0.0))
+            pass_s = sum(int(row.get('pass_s', 0)) for row in log_rows)
+            geom_drop = sum(int(row.get('geom_drop', 0)) for row in log_rows)
+            ma_ratio = pass_s / cu if cu > 0 else 0.0
+            geom_frac = geom_drop / pass_s if pass_s > 0 else 0.0
+            cap_a = _mean('a_ratio_cap')
+            cap_b = _mean('b_ratio_cap')
+            proto_on = float(snap.get('use_a_for_proto', 0.0))
+            p_lab = sum(float(row.get('proto_lab', 0)) for row in log_rows)
+            p_a = sum(float(row.get('proto_a', 0)) for row in log_rows)
+            p_a_u = sum(float(row.get('proto_a_unique', 0)) for row in log_rows)
+            p_aw = sum(float(row.get('proto_a_wrong', 0)) for row in log_rows)
+            proto_a_share = p_a / (p_lab + p_a) if (p_lab + p_a) > 0 else 0.0
+            proto_a_dirty = p_aw / p_a if p_a > 0 else 0.0
+            lab_mult = _mean('lab_mult')
             lA = float(snap.get('lambda_A_scale', 1.0))
             lB = float(snap.get('lambda_B_scale', 1.0))
             schedule.update_after_round(
@@ -1381,10 +1846,12 @@ def fixmatch(alpha):
                 f'Round {r}/{args.num_rounds} | Acc:{global_acc:.4f} Best:{best_acc:.4f}@{best_round} '
                 f'Phase:{ph} gate:{g_avg:.2f} | '
                 f'tau0:{snap["tau0"]:.3f} d0:{snap["delta0"]:.3f} etaB:{snap["eta_B"]:.3f} tw:{snap["tau_warmup"]:.3f} '
-                f'lA:{lA:.2f} lB:{lB:.2f} protoA:{int(proto_a)} | '
+                f'lA:{lA:.2f} lB:{lB:.2f} protoA:{int(proto_on)} | '
                 f'Loss:{avg_loss:.4f} (sup:{avg_L_sup:.3f} A:{avg_L_A:.3f} B:{avg_L_B:.3f} proto:{avg_L_proto:.3f}) | '
-                f'Route: A:{a_ratio:.2%} B:{b_ratio:.2%} C:{c_ratio:.2%} | '
+                f'Route: A:{a_ratio:.2%} B:{b_ratio:.2%} C:{c_ratio:.2%} capA:{cap_a:.2f} | '
+                f'MA:{ma_ratio:.2%} geomDrop:{geom_frac:.2%} | '
                 f'A-Prec:{a_prec:.2%} B-Prec:{b_prec:.2%} | '
+                f'proto Ashare:{proto_a_share:.2%} Auniq:{p_a_u:.1f} dirty:{proto_a_dirty:.2%} lab×{lab_mult:.1f} | '
                 f'rel r:{r_mean:.3f} m:{m_mean:.3f} alpha:{alpha_mean:.3f}'
             )
             if schedule.last_event:
@@ -1408,6 +1875,9 @@ def fixmatch(alpha):
             tb_writer.add_scalar('routing/a_ratio', a_ratio, r)
             tb_writer.add_scalar('routing/b_ratio', b_ratio, r)
             tb_writer.add_scalar('routing/c_ratio', c_ratio, r)
+            tb_writer.add_scalar('routing/m_a', ma_ratio, r)
+            tb_writer.add_scalar('routing/geom_drop', geom_frac, r)
+            tb_writer.add_scalar('routing/a_ratio_cap', cap_a, r)
             tb_writer.add_scalar('quality/a_precision', a_prec, r)
             tb_writer.add_scalar('quality/b_precision', b_prec, r)
             tb_writer.add_scalar('routing/gate', g_avg, r)
@@ -1420,7 +1890,11 @@ def fixmatch(alpha):
             tb_writer.add_scalar('adapt/tau_warmup', snap['tau_warmup'], r)
             tb_writer.add_scalar('adapt/lambda_A_scale', lA, r)
             tb_writer.add_scalar('adapt/lambda_B_scale', lB, r)
-            tb_writer.add_scalar('adapt/use_a_for_proto', proto_a, r)
+            tb_writer.add_scalar('adapt/use_a_for_proto', proto_on, r)
+            tb_writer.add_scalar('proto/a_share', proto_a_share, r)
+            tb_writer.add_scalar('proto/a_unique', p_a_u, r)
+            tb_writer.add_scalar('proto/a_dirty', proto_a_dirty, r)
+            tb_writer.add_scalar('proto/lab_mult', lab_mult, r)
             tb_writer.flush()
 
         # 每轮保存 checkpoint（覆盖同一个文件，断电/中断可续训）
@@ -1439,30 +1913,30 @@ def fixmatch(alpha):
             'run_id': paths["run_id"],
         }, ckpt_path)
 
-        acc_path = paths["acc_path"]
-        acc_num_pseudo_label_csv_index = list(range(1, len(fedavg_acc) + 1))
-        acc_num_pseudo_label_csv_df = pd.DataFrame({'acc': fedavg_acc}, index=acc_num_pseudo_label_csv_index)
-        acc_num_pseudo_label_csv_df.to_csv(acc_path, encoding='utf8')
+        acc_df = pd.DataFrame({
+            'round': list(range(1, len(fedavg_acc) + 1)),
+            'acc': fedavg_acc,
+        })
+        acc_df.to_csv(paths["acc_path"], index=False, encoding='utf8')
 
         if log_rows:
-            mpath = paths["metrics_path"]
-            keys = list(log_rows[0].keys())
-            mr = {k: _mean(k) for k in keys}
-            mr['round'] = r
-            mr['acc'] = global_acc
-            mr['phase'] = ph
-            fieldnames = list(mr.keys())
-            header_ok = False
-            if os.path.isfile(mpath) and r > 1:
-                with open(mpath, 'r', encoding='utf8') as rf:
-                    existing = rf.readline().strip().split(',')
-                header_ok = existing == fieldnames
-            mode = 'a' if header_ok else 'w'
-            with open(mpath, mode, newline='', encoding='utf8') as f:
-                w = csv.DictWriter(f, fieldnames=fieldnames)
-                if mode == 'w':
-                    w.writeheader()
-                w.writerow(mr)
+            mr = _metrics_row(
+                r=r,
+                phase=ph,
+                gate=g_avg,
+                acc=global_acc,
+                best_acc=best_acc,
+                best_round=best_round,
+                losses=(avg_loss, avg_L_sup, avg_L_A, avg_L_B, avg_L_proto),
+                route=(a_ratio, b_ratio, c_ratio, ma_ratio, geom_frac),
+                quality=(a_prec, b_prec, hce_rate),
+                proto=(proto_a_share, proto_a_dirty, p_a_u, p_lab, p_a, lab_mult),
+                rel=(r_mean, m_mean, alpha_mean),
+                knobs=(snap, lA, lB, proto_on, cap_a, cap_b, _mean('lr')),
+                counts=(cu, ca, cb, cc, pass_s, geom_drop,
+                        atot, acor, btot, bcor, hce_hc, hce_den, n_batches),
+            )
+            _append_metrics_row(paths["metrics_path"], mr, first_round=(r == 1))
 
     if tb_writer is not None:
         tb_writer.close()

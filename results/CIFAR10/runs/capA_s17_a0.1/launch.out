@@ -1,0 +1,55 @@
+[train] dataset=CIFAR10 alpha=0.1 gpu=0 config=configs/default_ppfpsl.yaml python=/home/disk1/xiaoyanwang/anaconda3/envs/py39/bin/python
+[Run] id=capA_s17
+  目录=./results/CIFAR10/runs/capA_s17_a0.1
+  acc.csv / metrics.csv / config.json / train.log / checkpoint.pt
+Files already downloaded and verified
+[HParams] METHOD_REV=10 adaptive=1 capA=0.25/1.0 capB=0.0 warmup=[0.3,0.4] aux_ratio=0.3 geom=[0.12,0.35] gate_anneal=0.15 p2_exit_A=0.08 tau_w=0.95 tau0=0.92 d0=0.1 etaB=0.6 pp_b=0.06 p3_boost=0.15 teacher=0 mu_p=0.97 lA=1.0 lB=1.0 lP=0.1 seed_model=17 seed_partition=1 seed_sample=17 workers=16
+dataset:CIFAR10
+num_classes:10
+num_labeled:500
+non_iid:0.1
+mu:2
+num_rounds:300
+batch_label:128, batch_unlabel:128
+client 0 labeled number per class : [33, 0, 0, 0, 29, 56, 32, 0, 53, 47]
+client 0 unlabeled number per class  : [422, 276, 282, 445, 409, 416, 0, 0, 0, 0]
+client 1 labeled number per class : [8, 53, 51, 64, 3, 1, 11, 59, 0, 0]
+client 1 unlabeled number per class  : [11, 198, 146, 1, 1, 33, 460, 470, 442, 488]
+client 2 labeled number per class : [58, 43, 0, 1, 58, 0, 40, 50, 0, 0]
+client 2 unlabeled number per class  : [204, 0, 453, 404, 4, 11, 301, 421, 438, 14]
+client 3 labeled number per class : [1, 1, 49, 53, 1, 46, 1, 5, 49, 44]
+client 3 unlabeled number per class  : [281, 473, 1, 1, 441, 446, 153, 1, 1, 452]
+client 4 labeled number per class : [20, 51, 0, 0, 37, 32, 50, 44, 0, 16]
+client 4 unlabeled number per class  : [420, 307, 461, 59, 0, 101, 0, 0, 432, 470]
+client 5 labeled number per class : [35, 1, 52, 53, 2, 13, 1, 2, 54, 37]
+client 5 unlabeled number per class  : [0, 170, 1, 390, 486, 321, 442, 440, 0, 0]
+client 6 labeled number per class : [44, 0, 47, 0, 32, 51, 44, 0, 32, 0]
+client 6 unlabeled number per class  : [441, 0, 458, 496, 176, 27, 451, 201, 0, 0]
+client 7 labeled number per class : [13, 54, 1, 37, 19, 3, 1, 50, 21, 51]
+client 7 unlabeled number per class  : [1, 454, 1, 3, 267, 409, 1, 238, 440, 436]
+client 8 labeled number per class : [34, 16, 53, 41, 1, 8, 0, 43, 0, 54]
+client 8 unlabeled number per class  : [488, 45, 431, 1, 469, 337, 0, 37, 0, 442]
+client 9 labeled number per class : [3, 43, 1, 9, 56, 34, 61, 1, 42, 0]
+client 9 unlabeled number per class  : [0, 384, 5, 446, 1, 119, 427, 422, 446, 0]
+client 10 labeled number per class : [0, 50, 53, 51, 42, 46, 8, 0, 0, 0]
+client 10 unlabeled number per class  : [137, 56, 446, 0, 0, 409, 329, 432, 0, 441]
+client 11 labeled number per class : [57, 1, 1, 1, 1, 1, 39, 41, 54, 54]
+client 11 unlabeled number per class  : [298, 373, 0, 465, 478, 59, 132, 22, 423, 0]
+client 12 labeled number per class : [39, 36, 22, 42, 60, 1, 50, 0, 0, 0]
+client 12 unlabeled number per class  : [467, 156, 460, 0, 215, 0, 27, 0, 475, 450]
+client 13 labeled number per class : [0, 0, 31, 1, 1, 57, 5, 55, 52, 48]
+client 13 unlabeled number per class  : [0, 282, 2, 415, 234, 444, 428, 445, 0, 0]
+client 14 labeled number per class : [51, 6, 0, 34, 21, 0, 10, 51, 29, 48]
+client 14 unlabeled number per class  : [82, 430, 85, 448, 15, 0, 270, 440, 480, 0]
+client 15 labeled number per class : [0, 37, 53, 10, 34, 54, 51, 1, 10, 0]
+client 15 unlabeled number per class  : [364, 1, 361, 25, 469, 435, 175, 1, 1, 418]
+client 16 labeled number per class : [51, 46, 0, 46, 0, 6, 48, 52, 1, 0]
+client 16 unlabeled number per class  : [164, 242, 444, 467, 422, 462, 49, 0, 0, 0]
+client 17 labeled number per class : [0, 10, 38, 1, 62, 36, 1, 1, 57, 44]
+client 17 unlabeled number per class  : [281, 202, 1, 1, 1, 1, 426, 460, 448, 429]
+client 18 labeled number per class : [53, 52, 7, 55, 40, 0, 0, 43, 0, 0]
+client 18 unlabeled number per class  : [315, 0, 90, 0, 8, 4, 429, 470, 474, 460]
+client 19 labeled number per class : [0, 0, 41, 1, 1, 55, 47, 2, 46, 57]
+client 19 unlabeled number per class  : [124, 451, 372, 433, 404, 466, 0, 0, 0, 0]
+[Schedule] adaptive=1 warmup=[0.30,0.40] geom=[0.12,0.35] capA=0.25/1.00 geom_rel=Phase2 gate 0→1 over 45 rounds target A-prec=0.9 A-ratio=0.22
+Server:   0%|          | 0/300 [00:00<?, ?it/s]

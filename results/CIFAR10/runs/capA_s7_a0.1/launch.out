@@ -1,0 +1,55 @@
+[train] dataset=CIFAR10 alpha=0.1 gpu=0 config=configs/default_ppfpsl.yaml python=/home/disk1/xiaoyanwang/anaconda3/envs/py39/bin/python
+[Run] id=capA_s7
+  目录=./results/CIFAR10/runs/capA_s7_a0.1
+  acc.csv / metrics.csv / config.json / train.log / checkpoint.pt
+Files already downloaded and verified
+[HParams] METHOD_REV=10 adaptive=1 capA=0.25/1.0 capB=0.0 warmup=[0.3,0.4] aux_ratio=0.3 geom=[0.12,0.35] gate_anneal=0.15 p2_exit_A=0.08 tau_w=0.95 tau0=0.92 d0=0.1 etaB=0.6 pp_b=0.06 p3_boost=0.15 teacher=0 mu_p=0.97 lA=1.0 lB=1.0 lP=0.1 seed_model=7 seed_partition=0 seed_sample=7 workers=16
+dataset:CIFAR10
+num_classes:10
+num_labeled:500
+non_iid:0.1
+mu:2
+num_rounds:300
+batch_label:128, batch_unlabel:128
+client 0 labeled number per class : [57, 38, 3, 0, 9, 0, 28, 7, 57, 51]
+client 0 unlabeled number per class  : [446, 460, 0, 3, 13, 0, 441, 0, 435, 452]
+client 1 labeled number per class : [0, 11, 47, 37, 33, 49, 18, 55, 0, 0]
+client 1 unlabeled number per class  : [0, 7, 466, 418, 423, 470, 1, 465, 0, 0]
+client 2 labeled number per class : [17, 0, 51, 0, 39, 59, 0, 0, 47, 37]
+client 2 unlabeled number per class  : [448, 289, 48, 441, 437, 64, 472, 0, 51, 0]
+client 3 labeled number per class : [25, 57, 1, 55, 1, 9, 43, 45, 1, 13]
+client 3 unlabeled number per class  : [1, 160, 430, 1, 2, 365, 1, 459, 364, 467]
+client 4 labeled number per class : [28, 0, 44, 3, 0, 0, 55, 29, 65, 26]
+client 4 unlabeled number per class  : [467, 0, 426, 0, 444, 475, 3, 216, 219, 0]
+client 5 labeled number per class : [6, 45, 2, 56, 56, 41, 1, 16, 1, 26]
+client 5 unlabeled number per class  : [1, 411, 1, 461, 0, 1, 465, 231, 229, 450]
+client 6 labeled number per class : [42, 46, 8, 28, 21, 62, 1, 42, 0, 0]
+client 6 unlabeled number per class  : [414, 0, 83, 463, 444, 401, 445, 0, 0, 0]
+client 7 labeled number per class : [26, 1, 37, 20, 30, 1, 54, 1, 36, 44]
+client 7 unlabeled number per class  : [1, 475, 329, 2, 1, 35, 13, 488, 457, 449]
+client 8 labeled number per class : [52, 58, 22, 54, 38, 0, 26, 0, 0, 0]
+client 8 unlabeled number per class  : [221, 0, 0, 473, 0, 449, 0, 224, 448, 435]
+client 9 labeled number per class : [1, 1, 31, 1, 13, 34, 16, 50, 48, 55]
+client 9 unlabeled number per class  : [213, 439, 439, 1, 463, 1, 457, 237, 0, 0]
+client 10 labeled number per class : [2, 43, 56, 30, 45, 45, 29, 0, 0, 0]
+client 10 unlabeled number per class  : [242, 446, 480, 144, 407, 445, 86, 0, 0, 0]
+client 11 labeled number per class : [52, 11, 1, 18, 1, 1, 21, 53, 44, 48]
+client 11 unlabeled number per class  : [240, 1, 1, 292, 48, 1, 338, 430, 452, 447]
+client 12 labeled number per class : [34, 9, 0, 55, 2, 12, 34, 2, 51, 51]
+client 12 unlabeled number per class  : [458, 444, 145, 19, 463, 451, 202, 0, 68, 0]
+client 13 labeled number per class : [12, 31, 51, 1, 50, 38, 17, 50, 0, 0]
+client 13 unlabeled number per class  : [1, 1, 308, 405, 1, 1, 231, 471, 389, 442]
+client 14 labeled number per class : [45, 25, 0, 17, 0, 0, 0, 56, 60, 47]
+client 14 unlabeled number per class  : [462, 453, 389, 0, 4, 0, 462, 10, 470, 0]
+client 15 labeled number per class : [0, 18, 54, 25, 61, 48, 44, 0, 0, 0]
+client 15 unlabeled number per class  : [0, 0, 51, 450, 452, 434, 1, 408, 1, 453]
+client 16 labeled number per class : [49, 41, 0, 51, 0, 43, 62, 4, 0, 0]
+client 16 unlabeled number per class  : [311, 0, 475, 494, 0, 0, 0, 36, 477, 457]
+client 17 labeled number per class : [1, 2, 47, 1, 52, 1, 1, 42, 44, 59]
+client 17 unlabeled number per class  : [111, 447, 1, 1, 442, 431, 446, 371, 0, 0]
+client 18 labeled number per class : [9, 62, 0, 47, 48, 0, 0, 40, 1, 43]
+client 18 unlabeled number per class  : [463, 352, 0, 298, 196, 0, 53, 0, 440, 448]
+client 19 labeled number per class : [42, 1, 45, 1, 1, 57, 50, 8, 45, 0]
+client 19 unlabeled number per class  : [0, 115, 428, 134, 260, 476, 383, 454, 0, 0]
+[Schedule] adaptive=1 warmup=[0.30,0.40] geom=[0.12,0.35] capA=0.25/1.00 geom_rel=Phase2 gate 0→1 over 45 rounds target A-prec=0.9 A-ratio=0.22
+Server:   0%|          | 0/300 [00:00<?, ?it/s]

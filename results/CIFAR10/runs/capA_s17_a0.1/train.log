@@ -1,0 +1,2 @@
+2026-09-09 13:37:57,068 - INFO - run_id=capA_s17 acc=./results/CIFAR10/runs/capA_s17_a0.1/acc.csv metrics=./results/CIFAR10/runs/capA_s17_a0.1/metrics.csv ckpt=./results/CIFAR10/runs/capA_s17_a0.1/checkpoint.pt
+2026-09-09 13:38:05,041 - INFO - [Schedule] adaptive=1 warmup=[0.30,0.40] geom=[0.12,0.35] capA=0.25/1.00 geom_rel=Phase2 gate 0→1 over 45 rounds target A-prec=0.9 A-ratio=0.22

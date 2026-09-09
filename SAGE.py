@@ -126,10 +126,10 @@ class Local(object):
                     inputs_x, targets_x = labeled_iter.__next__()
 
                 try:
-                    inputs_u_w, inputs_u_s, targets_u_groundtruth = unlabeled_iter.__next__()
+                    inputs_u_w, inputs_u_s, targets_u_groundtruth, _ = unlabeled_iter.__next__()
                 except:
                     unlabeled_iter = iter(self.unlabeled_trainloader)
-                    inputs_u_w, inputs_u_s, targets_u_groundtruth = unlabeled_iter.__next__()
+                    inputs_u_w, inputs_u_s, targets_u_groundtruth, _ = unlabeled_iter.__next__()
 
                 inputs_x, inputs_u_w, inputs_u_s = inputs_x.cuda(args.gpu_id), inputs_u_w.cuda(args.gpu_id), inputs_u_s.cuda(args.gpu_id)
 
@@ -330,6 +330,12 @@ def fixmatch(alpha):
     for client in range(args.num_clients):
         list_client2indices_unlabeled[client].extend(list_client2indices_labeled[client])
 
+    # FedAvg 权重：原始样本索引并集（有标已并入无标，不能相加；也不能用复制后的 len(dataset)）
+    client_n_samples = [
+        len(set(list_client2indices_labeled[k]) | set(list_client2indices_unlabeled[k]))
+        for k in range(args.num_clients)
+    ]
+
     global_model = Global(args)
     local_model = Local(args)
 
@@ -359,7 +365,7 @@ def fixmatch(alpha):
             data_client_unlabeled = indices2data_unlabeled
 
 
-            list_nums_local_data.append(len(data_client_labeled) + len(data_client_unlabeled))
+            list_nums_local_data.append(client_n_samples[client])
             local_params = local_model.fixmatch_train(args, data_client_labeled, data_client_unlabeled,
                                                       copy.deepcopy(dict_global_params), r)
             list_dicts_local_params.append(copy.deepcopy(local_params))

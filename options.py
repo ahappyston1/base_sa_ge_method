@@ -94,6 +94,10 @@ def args_parser():
     parser.add_argument('--batch_size_local_labeled', type=int, default=128)
     parser.add_argument('--batch_size_local_unlabeled', type=int, default=128)
     parser.add_argument('--batch_size_test', type=int, default=512)
+    parser.add_argument('--num_workers', type=int, default=8,
+                        help='本地 DataLoader 的进程数。0 为单进程（最慢）；增广在 CPU 上是主瓶颈，'
+                             '8 约提速 5 倍。worker 由 torch 按 base_seed+worker_id 播种，仍可复现，'
+                             '但与不同 num_workers 的历史 run 不再逐位一致')
     parser.add_argument('--lr_local_training', type=float, default=0.1)
     parser.add_argument('--lr_distillation_training', type=float, default=0.1)
 
@@ -110,7 +114,12 @@ def args_parser():
     parser.add_argument('--ablation_kappa', default=2, type=float,
                         help='Hyperparameter for controlling sensitivity of exponential decay in SAGE ablation study')
 
-    parser.add_argument('--seed', type=int, default=7)
+    parser.add_argument('--seed', type=int, default=7,
+                        help='模型 RNG：torch 初始化、cudnn、DataLoader shuffle。不控制数据划分。')
+    parser.add_argument('--partition_seed', type=int, default=0,
+                        help='数据划分 RNG：每类有标/无标切分与 Dirichlet 客户端划分。与 --seed 独立。')
+    parser.add_argument('--sample_seed', type=int, default=None,
+                        help='每轮在线客户端抽样 RNG。默认与 --seed 相同。')
 
     parser.add_argument('--resume', type=str, default='',
                         help='指定某个 .pt 续训；不填则新开实验（带时间戳，不覆盖正在跑的文件）')
@@ -202,15 +211,15 @@ def args_parser():
     parser.add_argument('--pp_warmup_max_ratio', type=float, default=0.40, help='Phase1 最多轮数占比')
     parser.add_argument('--pp_geom_min_ratio', type=float, default=0.12, help='Phase2 最少轮数占比')
     parser.add_argument('--pp_geom_max_ratio', type=float, default=0.35, help='Phase2 最多轮数占比')
-    parser.add_argument('--pp_phase1_exit_a_prec', type=float, default=0.70, help='离开 Phase1 所需 A 精度 EMA')
-    parser.add_argument('--pp_phase1_exit_acc', type=float, default=0.58, help='离开 Phase1 所需测试 Acc EMA')
+    parser.add_argument('--pp_phase1_exit_a_prec', type=float, default=0.70, help='仅日志；切阶段不再使用')
+    parser.add_argument('--pp_phase1_exit_acc', type=float, default=0.58, help='仅日志；切阶段不再使用')
+    parser.add_argument('--pp_phase2_exit_a_ratio', type=float, default=0.08, help='离开 Phase2 所需 A 占比 EMA（路由计数，无 GT）')
     parser.add_argument('--pp_aux_ready_a_prec', type=float, default=0.68,
-                        help='Phase1 打开 B/aux 所需 A 精度 EMA')
+                        help='历史项；当前 aux 按轮数打开')
     parser.add_argument('--pp_aux_ready_acc', type=float, default=0.50,
-                        help='Phase1 打开 B/aux 所需测试 Acc EMA')
-    parser.add_argument('--pp_phase2_exit_a_ratio', type=float, default=0.08, help='离开 Phase2 所需 A 占比 EMA')
-    parser.add_argument('--pp_a_ratio_cap', type=float, default=0.30, help='Phase2/3 A 桶最大占比，超出则按 score 截断')
-    parser.add_argument('--pp_a_ratio_cap_p1', type=float, default=0.40, help='Phase1 A 桶最大占比')
+                        help='历史项；当前 aux 按轮数打开')
+    parser.add_argument('--pp_a_ratio_cap', type=float, default=0.0, help='A 桶最大占比；0 表示不截断')
+    parser.add_argument('--pp_a_ratio_cap_p1', type=float, default=0.0, help='Phase1 A 桶最大占比；0 表示不截断')
     parser.add_argument('--pp_proto_a_prec', type=float, default=0.85, help='A 精度 EMA 低于此则不用 A 更新原型')
     parser.add_argument('--pp_dirty_a_step_mult', type=float, default=3.0, help='A 又大又脏时加快收紧门槛')
     parser.add_argument('--pp_min_c_ratio', type=float, default=0.15, help='C 占比低于此则提高 eta_B，强制拒识')
@@ -224,5 +233,7 @@ def args_parser():
         raise FileNotFoundError(f'--config 指定的 YAML 不存在: {yp}')
 
     args = parser.parse_args()
+    if getattr(args, 'sample_seed', None) is None:
+        args.sample_seed = int(args.seed)
     return args
 

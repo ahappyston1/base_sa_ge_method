@@ -5,6 +5,8 @@
 # ----- 方法 / 设备 -----
 gpu_id: 0
 seed: 7
+partition_seed: 0
+# sample_seed 默认等于 seed；只影响每轮在线客户端抽样
 
 # ----- 数据与联邦 -----
 dataset: CIFAR10
@@ -37,9 +39,9 @@ pp_warmup_min_ratio: 0.30
 pp_warmup_max_ratio: 0.40
 pp_geom_min_ratio: 0.12
 pp_geom_max_ratio: 0.35
-pp_phase1_exit_a_prec: 0.70
+pp_phase1_exit_a_prec: 0.70   # 仅日志；切阶段不再用无标 GT / 测试 Acc
 pp_phase1_exit_acc: 0.58
-pp_phase2_exit_a_ratio: 0.08
+pp_phase2_exit_a_ratio: 0.08  # 桶占比，不含真标签
 
 # ----- 门槛（该次实验 τ/η/δ 未自适应改动）-----
 pp_adapt_ema: 0.8
@@ -47,8 +49,8 @@ pp_adapt_step: 0.008
 pp_target_a_prec: 0.90
 pp_target_a_ratio: 0.22
 pp_target_b_prec: 0.75
-pp_a_ratio_cap: 0.30
-pp_a_ratio_cap_p1: 0.40
+pp_a_ratio_cap: 0.0
+pp_a_ratio_cap_p1: 0.0
 pp_proto_a_prec: 0.85
 pp_dirty_a_step_mult: 3.0
 pp_min_c_ratio: 0.15

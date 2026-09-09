@@ -18,6 +18,7 @@ from torchvision import datasets
 from torchvision import transforms
 
 from .randaugment import RandAugmentMC
+from .normalize import normalize_transform, to_tensor_normalize
 from Dataset.sample_dirichlet import clients_indices, clients_indices_unlabel
 
 import time
@@ -53,18 +54,18 @@ def show_clients_data_distribution(dataset, clients_indices_labeled, clients_ind
     return dict_per_client_labeled
 
 
-def partition_train(list_label2indices: list, ipc):
+def partition_train(list_label2indices: list, ipc, rng=None):
     """
     对每一类：随机打乱后前 ipc 个作为有标注，其余为无标注。
-    注意：SAGE.py 里传入的 args.num_labeled 即此处的 ipc，表示「每类」有标数。
+    rng：np.random.RandomState；缺省才用全局 np.random（不推荐）。
     """
+    if rng is None:
+        rng = np.random
     list_label2indices_labeled = []
     list_label2indices_unlabeled = []
 
     for indices in list_label2indices:
-
-        idx_shuffle = np.random.permutation(indices)
-
+        idx_shuffle = rng.permutation(np.asarray(indices))
         list_label2indices_labeled.append(idx_shuffle[:ipc])
         list_label2indices_unlabeled.append(idx_shuffle[ipc:])
     return list_label2indices_labeled, list_label2indices_unlabeled
@@ -115,26 +116,34 @@ def label_indices2indices(list_label2indices):
 
 
 
-class Indices2Dataset_labeled(Dataset):
-    """有标注分支：load(indices) 后仅迭代这些样本；弱增广 + CIFAR 归一化。"""
+LABELED_LEN_MULTIPLIER = 2000
 
-    def __init__(self, dataset):
+
+class Indices2Dataset_labeled(Dataset):
+    """有标注分支：load(indices) 后仅迭代这些样本；弱增广 + 与测试相同的归一化。"""
+
+    def __init__(self, dataset, dataset_name: str = "CIFAR10", augment: bool = True):
         self.dataset = dataset
         self.indices = None
-        # 预先创建 transform，避免每次 __getitem__ 都重新创建（极慢！）
-        self.label_trans = transforms.Compose([
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomCrop(size=32, padding=int(32 * 0.125), padding_mode='reflect'),
-            transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2471, 0.2435, 0.2616))
-        ])
+        self.dataset_name = dataset_name
+        self.augment = augment
+        norm = normalize_transform(dataset_name)
+        if augment:
+            self.label_trans = transforms.Compose([
+                transforms.RandomHorizontalFlip(),
+                transforms.RandomCrop(size=32, padding=int(32 * 0.125), padding_mode='reflect'),
+                transforms.ToTensor(),
+                norm,
+            ])
+        else:
+            self.label_trans = to_tensor_normalize(dataset_name)
 
     def load(self, indices: list):
         """绑定当前客户端的有标索引；列表重复多次以减少 DataLoader 重建迭代器开销。"""
         self.indices = indices
         self.client_dataset = [self.dataset[i] for i in indices]
         self.client_dataset_original_len = len(self.client_dataset)  # 保存原始长度
-        self.client_dataset *= 2000
+        self.client_dataset *= LABELED_LEN_MULTIPLIER
 
     def __getitem__(self, idx):
         image, label = self.client_dataset[idx]
@@ -146,25 +155,28 @@ class Indices2Dataset_labeled(Dataset):
 
 
 class Indices2Dataset_unlabeled_fixmatch(Dataset):
-    """无标注分支：返回 (弱增广, 强增广, 真实标签仅用于日志/分析)。"""
+    """无标注分支：返回 (弱增广, 强增广, 真标签仅日志, 原始样本 id)。"""
 
-    def __init__(self, dataset):
+    def __init__(self, dataset, dataset_name: str = "CIFAR10", augment: bool = True):
         self.dataset = dataset
         self.indices = None
-        # 预先创建 transforms，避免每次 __getitem__ 重复创建
-        self.weak = transforms.Compose([
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomCrop(size=32, padding=int(32 * 0.125), padding_mode='reflect'),
-        ])
-        self.strong = transforms.Compose([
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomCrop(size=32, padding=int(32 * 0.125), padding_mode='reflect'),
-            RandAugmentMC(n=2, m=10),
-        ])
-        self.normalize = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(mean=(0.4914, 0.4822, 0.4465), std=(0.2471, 0.2435, 0.2616))
-        ])
+        self.dataset_name = dataset_name
+        self.augment = augment
+        ident = transforms.Compose([])
+        if augment:
+            self.weak = transforms.Compose([
+                transforms.RandomHorizontalFlip(),
+                transforms.RandomCrop(size=32, padding=int(32 * 0.125), padding_mode='reflect'),
+            ])
+            self.strong = transforms.Compose([
+                transforms.RandomHorizontalFlip(),
+                transforms.RandomCrop(size=32, padding=int(32 * 0.125), padding_mode='reflect'),
+                RandAugmentMC(n=2, m=10),
+            ])
+        else:
+            self.weak = ident
+            self.strong = ident
+        self.normalize = to_tensor_normalize(dataset_name)
 
     def load(self, indices: list):
         """绑定当前客户端无标索引；内部列表重复若干倍以摊薄迭代器开销。"""
@@ -174,10 +186,12 @@ class Indices2Dataset_unlabeled_fixmatch(Dataset):
         self.client_dataset *= 50
 
     def __getitem__(self, idx):
-        image, label = self.client_dataset[idx]
+        real_idx = idx % int(self.client_dataset_len)
+        image, label = self.client_dataset[real_idx]
+        sample_id = int(self.indices[real_idx])
         weak = self.weak(image)
         strong = self.strong(image)
-        return self.normalize(weak), self.normalize(strong), label
+        return self.normalize(weak), self.normalize(strong), label, sample_id
 
     def __len__(self):
         return self.client_dataset_len
