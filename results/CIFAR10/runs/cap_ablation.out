@@ -3,3 +3,6 @@
 [cap-ablation] capA_s7 pid=62758 -> results/CIFAR10/runs/capA_s7_a0.1/launch.out
 [cap-ablation] base_s17 pid=62958 -> results/CIFAR10/runs/base_s17_a0.1/launch.out
 [cap-ablation] capA_s17 pid=63127 -> results/CIFAR10/runs/capA_s17_a0.1/launch.out
+[cap-ablation] capA_s7 完成
+[cap-ablation] base_s17 完成
+[cap-ablation] capA_s17 完成

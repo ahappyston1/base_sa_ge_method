@@ -81,6 +81,7 @@ def _run_paths(dataset, alpha, args) -> Dict[str, str]:
         "run_dir": run_dir,
         "acc_path": os.path.join(run_dir, "acc.csv"),
         "metrics_path": os.path.join(run_dir, "metrics.csv"),
+        "diag_path": os.path.join(run_dir, "diag.csv"),
         "ckpt_path": os.path.join(run_dir, "checkpoint.pt"),
         "resume_src": resume,
         "log_file": os.path.join(run_dir, "train.log"),
@@ -228,6 +229,62 @@ def _append_metrics_row(path: str, row: "OrderedDict", first_round: bool) -> Non
         w.writerow(row)
 
 
+def _diag_row(r: int, phase: int, cnt_u: int, agg: Dict[str, int]) -> "OrderedDict":
+    """由各客户端累计的诊断计数换算成轮级只读诊断行（GT 仅离线用）。"""
+    def g(k):
+        return int(agg.get(k, 0))
+
+    band_n = g("dg_band_n")
+    band_geom = g("dg_band_geom_n")
+    sup_n = g("dg_sup_n")
+    opp_n = g("dg_opp_n")
+    wouldB = g("dc_wouldB")
+    conflict = g("dc_wouldB_conflict")
+    geommiss = g("dc_wouldB_geommiss")
+    dconf_n = g("dconf_n")
+
+    def ratio(a, b):
+        return round(a / b, 6) if b > 0 else 0.0
+
+    row = OrderedDict()
+    row["round"] = r
+    row["phase"] = phase
+    # 几何判别（置信带内）
+    row["geom_cov"] = ratio(band_geom, band_n)   # 该置信带内几何有效覆盖率
+    row["band_n"] = band_n
+    row["sup_n"] = sup_n
+    row["sup_acc"] = ratio(g("dg_sup_cor"), sup_n)   # 几何支持组伪标签正确率
+    row["opp_n"] = opp_n
+    row["opp_acc"] = ratio(g("dg_opp_cor"), opp_n)   # 几何反对组伪标签正确率
+    # C 桶成因（Phase2/3）
+    row["c_lowconf"] = g("dc_lowconf")               # 纯低置信，合理留 C
+    row["c_wouldB"] = wouldB                          # 满足置信版 B 却进 C
+    row["c_wouldB_geommiss"] = geommiss              # 因几何缺失
+    row["c_wouldB_conflict"] = conflict              # 因有效几何冲突
+    row["c_wouldB_other"] = max(0, wouldB - geommiss - conflict)  # r_i 混合降级等
+    # 冲突进 C：分类器 vs 最近原型谁更常对
+    row["conflictC_n"] = dconf_n
+    row["conflictC_frac"] = ratio(dconf_n, cnt_u)
+    row["conflictC_clf_acc"] = ratio(g("dconf_clf_cor"), dconf_n)
+    row["conflictC_proto_acc"] = ratio(g("dconf_proto_cor"), dconf_n)
+    return row
+
+
+def _append_diag_row(path: str, row: "OrderedDict", first_round: bool) -> None:
+    """写 diag.csv；与 metrics.csv 同风格，表头不匹配则重写。"""
+    fieldnames = list(row.keys())
+    header_ok = False
+    if os.path.isfile(path) and not first_round:
+        with open(path, "r", encoding="utf8") as rf:
+            header_ok = rf.readline().strip().split(",") == fieldnames
+    mode = "a" if header_ok else "w"
+    with open(path, mode, newline="", encoding="utf8") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        if mode == "w":
+            w.writeheader()
+        w.writerow(row)
+
+
 def _write_run_config(path: str, args, extra: Dict[str, Any]) -> None:
     cfg = {
         "method_rev": METHOD_REV,
@@ -248,6 +305,11 @@ def _write_run_config(path: str, args, extra: Dict[str, Any]) -> None:
         "pp_adaptive": int(getattr(args, "pp_adaptive", 1)),
         "pp_a_ratio_cap": float(getattr(args, "pp_a_ratio_cap", 0)),
         "pp_a_ratio_cap_p1": float(getattr(args, "pp_a_ratio_cap_p1", 0)),
+        "proto_conf_floor": float(getattr(args, "proto_conf_floor", 0)),
+        "proto_w_extra": float(getattr(args, "proto_w_extra", 0)),
+        "diag_geom": int(getattr(args, "diag_geom", 1)),
+        "diag_s_lo": float(getattr(args, "diag_s_lo", 0.95)),
+        "diag_s_hi": float(getattr(args, "diag_s_hi", 0.99)),
         "tau_warmup": float(args.tau_warmup),
         "tau0": float(args.tau0),
         "delta0": float(args.delta0),
@@ -365,7 +427,7 @@ class AdaptiveSchedule:
         self.aux_scale = 0.0
         self.last_event = ""
         self.beta = float(getattr(args, "pp_adapt_ema", 0.8))
-        self.a_ratio_cap = float(getattr(args, "pp_a_ratio_cap_p1", 0.40))
+        self.a_ratio_cap = float(getattr(args, "pp_a_ratio_cap_p1", 0.0))
         self.b_ratio_cap = float(getattr(args, "pp_b_ratio_cap", 0.0))
         self.use_a_for_proto = 1.0
         self.lambda_A_scale = 1.0
@@ -435,8 +497,8 @@ class AdaptiveSchedule:
     def for_round(self, r: int) -> Dict[str, float]:
         if not self.enabled:
             ph = training_phase(r, self.r_total, self.args)
-            cap_p1 = float(getattr(self.args, "pp_a_ratio_cap_p1", 0.40))
-            cap_p2 = float(getattr(self.args, "pp_a_ratio_cap", 0.30))
+            cap_p1 = float(getattr(self.args, "pp_a_ratio_cap_p1", 0.0))
+            cap_p2 = float(getattr(self.args, "pp_a_ratio_cap", 0.0))
             g = gate_anneal(r, self.r_total, self.args) if ph == 2 else (0.0 if ph == 1 else 1.0)
             if ph == 1:
                 cap = cap_p1
@@ -481,8 +543,8 @@ class AdaptiveSchedule:
         else:
             self.aux_scale = 1.0
             self.gate = 1.0
-        cap_p1 = float(getattr(args, "pp_a_ratio_cap_p1", 0.40))
-        cap_p2 = float(getattr(args, "pp_a_ratio_cap", 0.30))
+        cap_p1 = float(getattr(args, "pp_a_ratio_cap_p1", 0.0))
+        cap_p2 = float(getattr(args, "pp_a_ratio_cap", 0.0))
         if self.phase == 1:
             self.a_ratio_cap = cap_p1
         elif self.phase == 2:
@@ -508,8 +570,8 @@ class AdaptiveSchedule:
     def _adapt_thresholds(self) -> None:
         """对齐 81% 实验：不改 τ/η/λ。Phase2 的 A cap 随 gate 从 p1 插到 p2。"""
         args = self.args
-        cap_p1 = float(getattr(args, "pp_a_ratio_cap_p1", 0.40))
-        cap_p2 = float(getattr(args, "pp_a_ratio_cap", 0.30))
+        cap_p1 = float(getattr(args, "pp_a_ratio_cap_p1", 0.0))
+        cap_p2 = float(getattr(args, "pp_a_ratio_cap", 0.0))
         if self.phase == 1:
             self.a_ratio_cap = cap_p1
         elif self.phase == 2:
@@ -677,6 +739,91 @@ def _route_phase23(
 
 
 @torch.no_grad()
+def _diag_geom_c(
+    s_i: torch.Tensor,
+    yhat: torch.Tensor,
+    y_gt: torch.Tensor,
+    m_i: torch.Tensor,
+    delta_i: torch.Tensor,
+    geom_ok: torch.Tensor,
+    in_C: torch.Tensor,
+    eta_B: float,
+    zw: torch.Tensor,
+    p_mix: torch.Tensor,
+    mix_valid: torch.Tensor,
+    s_lo: float,
+    s_hi: float,
+    b_m_thr: float = 0.0,
+) -> Dict[str, int]:
+    """只读诊断（Phase2/3）。GT 仅用于离线核对，不参与任何训练决策。
+
+    回答两件事：
+    1) 同一置信带 [s_lo,s_hi) 内，几何支持 vs 反对两组的伪标签正确率与数量、几何覆盖率
+       —— 支持/反对用的是 A 的间隔门槛 delta_i。
+    2) C 桶成因：纯低置信 / 满足置信版 B 却进 C。
+       - 几何缺失：~geom_ok（未知几何回退若生效，此项应接近 0）
+       - 有效几何挡住 B：geom_ok 且 m < b_m_thr（与 _route_phase23 的 B 间隔门槛一致，
+         不是写死 m<0；Phase2 中 b_m_thr 随 gate 从 -2 插到 pp_b_min_margin）
+       - 其余记入 other（主要是 r_i 混合后 b_score < eta_B）
+       冲突进 C 的「谁更常对」仍用 m<0（分类器与原型符号不一致），与 B 门槛分开。
+    """
+    d: Dict[str, int] = {}
+    correct = yhat == y_gt
+    band = (s_i >= s_lo) & (s_i < s_hi)
+    d["dg_band_n"] = int(band.sum().item())
+    bg = band & geom_ok
+    d["dg_band_geom_n"] = int(bg.sum().item())
+    sup = bg & (m_i >= delta_i)
+    opp = bg & (m_i < delta_i)
+    d["dg_sup_n"] = int(sup.sum().item())
+    d["dg_sup_cor"] = int((sup & correct).sum().item())
+    d["dg_opp_n"] = int(opp.sum().item())
+    d["dg_opp_cor"] = int((opp & correct).sum().item())
+
+    would_b = in_C & (s_i >= eta_B)
+    d["dc_lowconf"] = int((in_C & (s_i < eta_B)).sum().item())
+    d["dc_wouldB"] = int(would_b.sum().item())
+    d["dc_wouldB_geommiss"] = int((would_b & (~geom_ok)).sum().item())
+    d["dc_wouldB_conflict"] = int((would_b & geom_ok & (m_i < b_m_thr)).sum().item())
+
+    conf = in_C & geom_ok & (m_i < 0)
+    d["dconf_n"] = int(conf.sum().item())
+    d["dconf_clf_cor"] = int((conf & correct).sum().item())
+    if conf.any():
+        sims = zw @ p_mix.t()
+        sims = sims.masked_fill(~mix_valid.unsqueeze(0), float("-inf"))
+        proto_pred = sims.argmax(dim=1)
+        d["dconf_proto_cor"] = int((conf & (proto_pred == y_gt)).sum().item())
+    else:
+        d["dconf_proto_cor"] = 0
+    return d
+
+
+_DIAG_KEYS = (
+    "dg_band_n", "dg_band_geom_n", "dg_sup_n", "dg_sup_cor", "dg_opp_n", "dg_opp_cor",
+    "dc_lowconf", "dc_wouldB", "dc_wouldB_geommiss", "dc_wouldB_conflict",
+    "dconf_n", "dconf_clf_cor", "dconf_proto_cor",
+)
+
+
+@torch.no_grad()
+def _proto_write_weight(base_w: torch.Tensor, s_sel: torch.Tensor, args):
+    """写原型的独立权重与筛选，解耦于 CE。
+
+    - proto_w_extra>0：在既有权重上再乘 s^extra，进一步压低低置信样本的原型贡献；
+    - proto_conf_floor>0：置信度低于门槛的样本硬性不写原型（返回 keep 掩码）。
+
+    默认（extra=0, floor=0）返回 (base_w, None)，与旧行为逐位一致，且 CE 权重不受影响。
+    """
+    w = base_w
+    extra = float(getattr(args, "proto_w_extra", 0.0))
+    if extra > 0.0:
+        w = w * s_sel.pow(extra)
+    floor = float(getattr(args, "proto_conf_floor", 0.0))
+    keep = (s_sel >= floor) if floor > 0.0 else None
+    return w, keep
+
+
 def _unique_a_mass(
     sample_ids: torch.Tensor,
     yhat: torch.Tensor,
@@ -952,8 +1099,8 @@ class LocalPPFPSL:
             delta0_eff = float(args.delta0)
             eta_B_eff = float(args.eta_B)
             tau_warmup_eff = float(args.tau_warmup)
-            cap_p1 = float(getattr(args, "pp_a_ratio_cap_p1", 0.40))
-            cap_p2 = float(getattr(args, "pp_a_ratio_cap", 0.30))
+            cap_p1 = float(getattr(args, "pp_a_ratio_cap_p1", 0.0))
+            cap_p2 = float(getattr(args, "pp_a_ratio_cap", 0.0))
             if phase == 1:
                 a_ratio_cap = cap_p1
             elif phase == 2:
@@ -972,8 +1119,8 @@ class LocalPPFPSL:
             delta0_eff = float(sched["delta0"])
             eta_B_eff = float(sched["eta_B"])
             tau_warmup_eff = float(sched["tau_warmup"])
-            cap_p1 = float(getattr(args, "pp_a_ratio_cap_p1", 0.40))
-            cap_p2 = float(getattr(args, "pp_a_ratio_cap", 0.30))
+            cap_p1 = float(getattr(args, "pp_a_ratio_cap_p1", 0.0))
+            cap_p2 = float(getattr(args, "pp_a_ratio_cap", 0.0))
             a_ratio_cap = float(sched.get("a_ratio_cap", cap_p2))
             if phase == 2:
                 a_ratio_cap = _lerp(g_gate, cap_p1, cap_p2)
@@ -1149,18 +1296,30 @@ class LocalPPFPSL:
                         if use_a_for_proto and mask.any():
                             zw_a = zw[mask].detach()
                             cc = yhat[mask]
-                            wi = (s_i[mask] ** args.w_gamma).clamp(args.w_min, 1.0)
-                            a_id_chunks.append(u_ids[mask].detach())
-                            a_cls_chunks.append(yhat[mask].detach())
-                            a_w_chunks.append(wi.detach())
-                            log_acc["proto_a_wrong"] += float(
-                                wi[yhat[mask] != y_u_gt[mask]].sum().item()
-                            )
-                            for cls in range(args.num_classes):
-                                mm = cc == cls
-                                if mm.any():
-                                    z_a_sum[cls] += (zw_a[mm] * wi[mm].unsqueeze(1)).sum(0)
-                                    w_a_sum[cls] += wi[mm].sum()
+                            s_sel = s_i[mask]
+                            gt_sel = y_u_gt[mask]
+                            ids_sel = u_ids[mask]
+                            wi = (s_sel ** args.w_gamma).clamp(args.w_min, 1.0)
+                            # 写原型独立于 CE：更严筛选 / 更狠权重，默认无操作
+                            wi, keep = _proto_write_weight(wi, s_sel, args)
+                            if keep is not None:
+                                zw_a = zw_a[keep]
+                                cc = cc[keep]
+                                wi = wi[keep]
+                                gt_sel = gt_sel[keep]
+                                ids_sel = ids_sel[keep]
+                            if wi.numel() > 0:
+                                a_id_chunks.append(ids_sel.detach())
+                                a_cls_chunks.append(cc.detach())
+                                a_w_chunks.append(wi.detach())
+                                log_acc["proto_a_wrong"] += float(
+                                    wi[cc != gt_sel].sum().item()
+                                )
+                                for cls in range(args.num_classes):
+                                    mm = cc == cls
+                                    if mm.any():
+                                        z_a_sum[cls] += (zw_a[mm] * wi[mm].unsqueeze(1)).sum(0)
+                                        w_a_sum[cls] += wi[mm].sum()
                     log_acc["cnt_u"] += yhat.numel()
                     log_acc["cnt_a"] += mask.sum()
                     log_acc["cnt_b"] += in_B.sum()
@@ -1215,6 +1374,20 @@ class LocalPPFPSL:
                     pass_s, fail_geom = routed["pass_s"], routed["fail_geom"]
                     b_score = routed["b_score"]
 
+                    if int(getattr(args, "diag_geom", 1)):
+                        b_m_thr = _lerp(
+                            g_gate, m_floor, float(getattr(args, "pp_b_min_margin", 0.0))
+                        )
+                        dd = _diag_geom_c(
+                            s_i, yhat, y_u_gt, m_i, delta_i, geom_ok, in_C,
+                            eta_B_eff, zw, p_mix, mix_valid,
+                            float(getattr(args, "diag_s_lo", 0.95)),
+                            float(getattr(args, "diag_s_hi", 0.99)),
+                            b_m_thr=b_m_thr,
+                        )
+                        for _k, _v in dd.items():
+                            log_acc[_k] = log_acc.get(_k, 0) + _v
+
                     w_geom = (s_i ** args.w_gamma * m_tilde).clamp(args.w_min, 1.0)
                     w_full = torch.zeros_like(s_i)
                     if in_A.any():
@@ -1249,20 +1422,32 @@ class LocalPPFPSL:
                             zw_a = zw[in_A]
                             cc = yhat[in_A]
                             wi = w_full[in_A]
-                            a_id_chunks.append(u_ids[in_A].detach())
-                            a_cls_chunks.append(yhat[in_A].detach())
-                            a_w_chunks.append(wi.detach())
-                            log_acc["proto_a_wrong"] += float(
-                                wi[yhat[in_A] != y_u_gt[in_A]].sum().item()
-                            )
-                            sim_pa = (zw_a * p_loc[cc]).sum(-1)
-                            intra_num.scatter_add_(0, cc, wi * (1.0 - sim_pa))
-                            intra_den.scatter_add_(0, cc, wi)
-                            for cls in range(args.num_classes):
-                                mm = cc == cls
-                                if mm.any():
-                                    z_a_sum[cls] += (zw_a[mm] * wi[mm].unsqueeze(1)).sum(0)
-                                    w_a_sum[cls] += wi[mm].sum()
+                            s_sel = s_i[in_A]
+                            gt_sel = y_u_gt[in_A]
+                            ids_sel = u_ids[in_A]
+                            # 写原型独立于 CE：更严筛选 / 更狠权重，默认无操作
+                            wi, keep = _proto_write_weight(wi, s_sel, args)
+                            if keep is not None:
+                                zw_a = zw_a[keep]
+                                cc = cc[keep]
+                                wi = wi[keep]
+                                gt_sel = gt_sel[keep]
+                                ids_sel = ids_sel[keep]
+                            if wi.numel() > 0:
+                                a_id_chunks.append(ids_sel.detach())
+                                a_cls_chunks.append(cc.detach())
+                                a_w_chunks.append(wi.detach())
+                                log_acc["proto_a_wrong"] += float(
+                                    wi[cc != gt_sel].sum().item()
+                                )
+                                sim_pa = (zw_a * p_loc[cc]).sum(-1)
+                                intra_num.scatter_add_(0, cc, wi * (1.0 - sim_pa))
+                                intra_den.scatter_add_(0, cc, wi)
+                                for cls in range(args.num_classes):
+                                    mm = cc == cls
+                                    if mm.any():
+                                        z_a_sum[cls] += (zw_a[mm] * wi[mm].unsqueeze(1)).sum(0)
+                                        w_a_sum[cls] += wi[mm].sum()
 
                     loss = (
                         L_sup
@@ -1502,7 +1687,7 @@ def fixmatch(alpha):
     print(
         f'[Run] id={paths["run_id"]}\n'
         f'  目录={paths["run_dir"]}\n'
-        f'  acc.csv / metrics.csv / config.json / train.log / checkpoint.pt'
+        f'  acc.csv / metrics.csv / diag.csv / config.json / train.log / checkpoint.pt'
     )
     logging.info(
         'run_id=%s acc=%s metrics=%s ckpt=%s',
@@ -1565,7 +1750,9 @@ def fixmatch(alpha):
         f"lA={args.lambda_A} lB={args.lambda_B} lP={args.lambda_proto} "
         f"seed_model={args.seed} seed_partition={getattr(args,'partition_seed',0)} "
         f"seed_sample={getattr(args,'sample_seed', args.seed)} "
-        f"workers={getattr(args,'num_workers',0)}"
+        f"workers={getattr(args,'num_workers',0)} "
+        f"protoWrite=floor{getattr(args,'proto_conf_floor',0)}/extra{getattr(args,'proto_w_extra',0)} "
+        f"diag={int(getattr(args,'diag_geom',1))}"
     )
     print(_hp)
     _write_run_config(
@@ -1683,6 +1870,7 @@ def fixmatch(alpha):
         f"warmup=[{getattr(args, 'pp_warmup_min_ratio', 0.15):.2f},{getattr(args, 'pp_warmup_max_ratio', 0.40):.2f}] "
         f"geom=[{getattr(args, 'pp_geom_min_ratio', 0.12):.2f},{getattr(args, 'pp_geom_max_ratio', 0.35):.2f}] "
         f"capA={getattr(args, 'pp_a_ratio_cap_p1', 0):.2f}/{getattr(args, 'pp_a_ratio_cap', 0):.2f} "
+        f"protoWrite=floor{getattr(args, 'proto_conf_floor', 0):.2f}/extra{getattr(args, 'proto_w_extra', 0):.2f} "
         f"geom_rel=Phase2 gate 0→1 over {max(1, int(round(getattr(args, 'pp_gate_anneal_ratio', 0.15) * args.num_rounds)))} rounds "
         f"target A-prec={getattr(args, 'pp_target_a_prec', 0.90)} A-ratio={getattr(args, 'pp_target_a_ratio', 0.22)}"
     )
@@ -1937,6 +2125,17 @@ def fixmatch(alpha):
                         atot, acor, btot, bcor, hce_hc, hce_den, n_batches),
             )
             _append_metrics_row(paths["metrics_path"], mr, first_round=(r == 1))
+
+            if int(getattr(args, "diag_geom", 1)):
+                diag_agg = {
+                    k: sum(int(row.get(k, 0)) for row in log_rows)
+                    for k in _DIAG_KEYS
+                }
+                _append_diag_row(
+                    paths["diag_path"],
+                    _diag_row(r, ph, cu, diag_agg),
+                    first_round=(r == 1),
+                )
 
     if tb_writer is not None:
         tb_writer.close()

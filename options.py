@@ -173,6 +173,18 @@ def args_parser():
     parser.add_argument('--eta_B', type=float, default=0.60, help='B 桶可靠性阈值')
     parser.add_argument('--w_min', type=float, default=0.05, help='A 桶样本权重下界')
     parser.add_argument('--w_gamma', type=float, default=1.0, help='A 桶权重中置信度的幂 gamma_w')
+    # 解耦「进 CE」与「写原型」：A 全量进硬 CE 不变，仅在写原型时更严。默认 0 = 与旧行为逐位一致。
+    parser.add_argument('--proto_conf_floor', type=float, default=0.0,
+                        help='写原型的置信度硬门槛：低于此的 A 样本不写原型（不影响 CE）；0=关闭')
+    parser.add_argument('--proto_w_extra', type=float, default=0.0,
+                        help='写原型的额外置信度幂：w_proto=w*s^extra，越大越压低低置信样本（不影响 CE）；0=关闭')
+    # 几何/ C 桶诊断：GT 仅离线统计，只写 diag.csv，绝不参与路由/损失/原型。默认开启，可关。
+    parser.add_argument('--diag_geom', type=int, default=1,
+                        help='1=记录几何判别与 C 桶原因诊断到 diag.csv（不改训练）；0=关闭')
+    parser.add_argument('--diag_s_lo', type=float, default=0.95,
+                        help='几何判别诊断的置信下界（含）')
+    parser.add_argument('--diag_s_hi', type=float, default=0.99,
+                        help='几何判别诊断的置信上界（不含）')
     parser.add_argument('--w_Tp', type=float, default=1.0, help='A 桶权重 sigmoid(m/T_p) 的温度')
     parser.add_argument('--lambda_A', type=float, default=1.0)
     parser.add_argument('--lambda_B', type=float, default=1.0)

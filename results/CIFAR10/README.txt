@@ -6,6 +6,7 @@ CIFAR-10 结果目录
   runs/<run_id>_a<alpha>/
       acc.csv        每轮测试精度：round, acc
       metrics.csv    每轮完整指标（51 列，列序见下）
+      diag.csv       几何/C 桶只读诊断（GT 仅离线；Phase1 为 0）
       config.json    该次实验的关键配置与三个随机种子
       train.log      训练日志（每轮一行汇总）
       launch.out     启动脚本的原始 stdout（含 tqdm、异常栈）
@@ -47,3 +48,20 @@ metrics.csv 的列顺序
   lab_mult       有标特征累计量 / 独立有标样本数，反映一轮内的重复访问倍数
 
 列定义集中在 fl_runner._metrics_row()，顺序由 tests/test_metrics_csv.py 钉住。
+
+
+diag.csv（只读，不改训练）
+------------------------
+  几何判别（s∈[diag_s_lo, diag_s_hi)，默认 [0.95, 0.99)）：
+    geom_cov, band_n, sup_n, sup_acc, opp_n, opp_acc
+    支持/反对用 A 的间隔门槛 delta。同置信度下 opp_acc 明显低于 sup_acc，
+    说明几何有增量信息。
+  C 桶成因（Phase2/3）：
+    c_lowconf            纯低置信，合理留 C
+    c_wouldB             满足 s≥eta_B 却进 C
+    c_wouldB_geommiss    其中几何未知（回退若生效应接近 0）
+    c_wouldB_conflict    其中被 B 的间隔门槛挡住（m < b_m_thr，随 gate 变）
+    c_wouldB_other       其余，主要是 r_i 混合后 b_score 不够
+  冲突进 C（m<0，分类器 vs 最近原型）：
+    conflictC_frac, conflictC_clf_acc, conflictC_proto_acc
+  Phase1 各列写 0，因为该阶段没有几何。
