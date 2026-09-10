@@ -44,7 +44,7 @@ import json
 
 worker_num = 4
 # 当前唯一实现的 checkpoint 标记；旧 V1/V2 权重没有此字段，不会被误续训
-METHOD_REV = 10
+METHOD_REV = 11
 
 
 def _lerp(g, a, b):
@@ -267,6 +267,11 @@ def _diag_row(r: int, phase: int, cnt_u: int, agg: Dict[str, int]) -> "OrderedDi
     row["conflictC_frac"] = ratio(dconf_n, cnt_u)
     row["conflictC_clf_acc"] = ratio(g("dconf_clf_cor"), dconf_n)
     row["conflictC_proto_acc"] = ratio(g("dconf_proto_cor"), dconf_n)
+    row["tau_n"] = g("dt_n")
+    row["tau_clipped_n"] = g("dt_clipped_n")
+    row["tau_clipped_frac"] = ratio(g("dt_clipped_n"), g("dt_n"))
+    row["tau_raw_ge1_n"] = g("dt_raw_ge1_n")
+    row["tau_effective_ge1_n"] = g("dt_effective_ge1_n")
     return row
 
 
@@ -310,6 +315,7 @@ def _write_run_config(path: str, args, extra: Dict[str, Any]) -> None:
         "diag_geom": int(getattr(args, "diag_geom", 1)),
         "diag_s_lo": float(getattr(args, "diag_s_lo", 0.95)),
         "diag_s_hi": float(getattr(args, "diag_s_hi", 0.99)),
+        "geometry_controls": _geometry_controls(args),
         "tau_warmup": float(args.tau_warmup),
         "tau0": float(args.tau0),
         "delta0": float(args.delta0),
@@ -322,6 +328,24 @@ def _write_run_config(path: str, args, extra: Dict[str, Any]) -> None:
 
 
 # ============= PPFPSL 核心函数 =============
+
+def _geometry_controls(args) -> Dict[str, Any]:
+    """Training controls persisted for reproducible server runs."""
+    return {
+        "tau_ceiling": float(getattr(args, "pp_tau_ceiling", 0.99)),
+        "complete_gate": int(getattr(args, "pp_complete_gate", 1)),
+        "unknown_b_conf": int(getattr(args, "pp_unknown_b_conf", 1)),
+    }
+
+
+def _class_thresholds(nr, tau0, delta0, a, b, boost, ceiling):
+    """Bound confidence thresholds; preserve the pressure margin formula."""
+    pressure = nr * (1.0 + boost * nr)
+    raw_tau = tau0 + a * pressure
+    delta = delta0 + b * pressure
+    tau = raw_tau.clamp(max=ceiling) if ceiling > 0 else raw_tau
+    return tau, delta, raw_tau
+
 
 def _infer_dim(model: nn.Module, device: torch.device) -> int:
     """推断 backbone 特征维度。"""
@@ -341,6 +365,8 @@ def training_phase(r: int, r_total: int, args) -> int:
     """返回 1/2/3 表示 warm-up / geometry / pressure-enhanced。"""
     rw = _warmup_rounds(r_total, args)
     rg = max(0, int(round(args.pp_geom_ratio * r_total)))
+    if int(getattr(args, "pp_complete_gate", 1)):
+        rg = max(rg, max(1, int(round(args.pp_gate_anneal_ratio * r_total))))
     if r <= rw:
         return 1
     if r <= rw + rg:
@@ -618,13 +644,17 @@ class AdaptiveSchedule:
                 print("[Schedule]", self.last_event)
         elif self.phase == 2:
             exit_ar = float(getattr(args, "pp_phase2_exit_a_ratio", 0.08))
+            complete = bool(int(getattr(args, "pp_complete_gate", 1)))
+            anneal = max(1, int(round(args.pp_gate_anneal_ratio * self.r_total)))
+            gate_ready = (stayed >= anneal and self.gate >= 1.0) if complete else self.gate >= 0.95
             ready = (
                 stayed >= min_g
-                and self.gate >= 0.95
+                and gate_ready
                 and self.ema_a_ratio is not None
                 and self.ema_a_ratio >= exit_ar
             )
-            if ready or stayed >= max_g:
+            timed_out = stayed >= max_g and (not complete or gate_ready)
+            if ready or timed_out:
                 why = "ready" if ready else "max_geom"
                 self.phase = 3
                 self.phase_enter_round = r + 1
@@ -707,6 +737,7 @@ def _route_phase23(
     b_min_m: float,
     m_floor: float = -2.0,
     geom_ok: Optional[torch.Tensor] = None,
+    unknown_b_conf: bool = True,
 ) -> Dict[str, torch.Tensor]:
     """Phase2/3：置信度 + 随 gate 接入的几何。不含 GT。
 
@@ -722,6 +753,10 @@ def _route_phase23(
     score_a = _lerp(g_gate, s_i, s_i * m_tilde)
     in_A = _cap_bucket(in_A, score_a, a_cap)
     b_score = _lerp(g_gate, s_i, r_i)
+    if unknown_b_conf:
+        # Missing geometry must not lower B admission or its KL weight.
+        # A eligibility and all valid-geometry rules remain unchanged.
+        b_score = torch.where(geom_ok, b_score, s_i)
     b_m_thr = _lerp(g_gate, m_floor, b_min_m)
     b_margin_ok = (~geom_ok) | (m_i >= b_m_thr)
     in_B = _cap_bucket((~in_A) & (b_score >= eta_B) & b_margin_ok, b_score, b_cap)
@@ -800,6 +835,7 @@ def _diag_geom_c(
 
 
 _DIAG_KEYS = (
+    "dt_n", "dt_clipped_n", "dt_raw_ge1_n", "dt_effective_ge1_n",
     "dg_band_n", "dg_band_geom_n", "dg_sup_n", "dg_sup_cor", "dg_opp_n", "dg_opp_cor",
     "dc_lowconf", "dc_wouldB", "dc_wouldB_geommiss", "dc_wouldB_conflict",
     "dconf_n", "dconf_clf_cor", "dconf_proto_cor",
@@ -1335,16 +1371,16 @@ class LocalPPFPSL:
                             loss = loss + aux_scale * args.lambda_proto * L_proto
                 else:
                     nr = norm_rho_in
-                    tau_c = tau0_eff + args.pp_a * nr
-                    delta_c = delta0_eff + args.pp_b * nr
-                    if phase == 3:
-                        boost = 1.0 + args.pp_phase3_geom_boost * nr
-                        tau_c = tau0_eff + args.pp_a * nr * boost
-                        delta_c = delta0_eff + args.pp_b * nr * boost
+                    ceiling = float(getattr(args, "pp_tau_ceiling", 0.99))
+                    boost = args.pp_phase3_geom_boost if phase == 3 else 0.0
+                    tau_c, delta_c, raw_tau_c = _class_thresholds(
+                        nr, tau0_eff, delta0_eff, args.pp_a, args.pp_b, boost, ceiling
+                    )
 
                     m_floor = -2.0
                     tau_i = _lerp(g_gate, tau_warmup_eff, tau_c[yhat])
                     delta_i = _lerp(g_gate, m_floor, delta_c[yhat])
+                    raw_tau_i = _lerp(g_gate, tau_warmup_eff, raw_tau_c[yhat])
 
                     m_i, geom_ok, own_ok = _geom_margin(zw, yhat, p_mix, mix_valid)
                     m0 = float(getattr(args, "pp_m0", 0.05))
@@ -1369,12 +1405,20 @@ class LocalPPFPSL:
                         float(getattr(args, "pp_b_min_margin", 0.0)),
                         m_floor,
                         geom_ok,
+                        unknown_b_conf=bool(int(getattr(args, "pp_unknown_b_conf", 1))),
                     )
                     in_A, in_B, in_C = routed["in_A"], routed["in_B"], routed["in_C"]
                     pass_s, fail_geom = routed["pass_s"], routed["fail_geom"]
                     b_score = routed["b_score"]
 
                     if int(getattr(args, "diag_geom", 1)):
+                        for key, value in {
+                            "dt_n": yhat.numel(),
+                            "dt_clipped_n": int((raw_tau_i > tau_i).sum().item()),
+                            "dt_raw_ge1_n": int((raw_tau_i >= 1.0).sum().item()),
+                            "dt_effective_ge1_n": int((tau_i >= 1.0).sum().item()),
+                        }.items():
+                            log_acc[key] = log_acc.get(key, 0) + value
                         b_m_thr = _lerp(
                             g_gate, m_floor, float(getattr(args, "pp_b_min_margin", 0.0))
                         )
@@ -1746,6 +1790,8 @@ def fixmatch(alpha):
         f"p2_exit_A={getattr(args,'pp_phase2_exit_a_ratio',0)} "
         f"tau_w={args.tau_warmup} tau0={args.tau0} d0={args.delta0} etaB={args.eta_B} "
         f"pp_b={args.pp_b} p3_boost={getattr(args,'pp_phase3_geom_boost',0)} "
+        f"pp_a={args.pp_a} geom_controls={_geometry_controls(args)} "
+        f"raw_tau_max={args.tau0 + args.pp_a * (1 + args.pp_phase3_geom_boost):.4f} "
         f"teacher={getattr(args,'pp_teacher',0)} mu_p={args.mu_p} "
         f"lA={args.lambda_A} lB={args.lambda_B} lP={args.lambda_proto} "
         f"seed_model={args.seed} seed_partition={getattr(args,'partition_seed',0)} "
@@ -1882,11 +1928,15 @@ def fixmatch(alpha):
     if os.path.isfile(load_ckpt):
         ckpt = torch.load(load_ckpt, map_location='cpu')
         if ckpt.get('method_rev') != METHOD_REV:
+            if paths["resume_src"]:
+                raise ValueError('Checkpoint METHOD_REV differs; start a fresh run without --resume')
             print(
                 f'[Resume] 忽略 {load_ckpt}（method_rev={ckpt.get("method_rev")}，需要 {METHOD_REV}），'
                 f'从头训练并写入 {ckpt_path}'
             )
         else:
+            if ckpt.get('geometry_controls') != _geometry_controls(args):
+                raise ValueError('Geometry controls differ from checkpoint; restore flags or start a fresh run')
             print(f'[Resume] 从 {load_ckpt} 恢复，保存到 {ckpt_path}')
             global_model.model.load_state_dict(ckpt['global_model'])
             global_model.p_ref = ckpt['p_ref'].to(global_model.p_ref.device)
@@ -2098,6 +2148,7 @@ def fixmatch(alpha):
             'cuda_rng_state': torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
             'schedule': schedule.state_dict(),
             'method_rev': METHOD_REV,
+            'geometry_controls': _geometry_controls(args),
             'run_id': paths["run_id"],
         }, ckpt_path)
 

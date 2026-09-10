@@ -208,12 +208,18 @@ def args_parser():
     parser.add_argument('--pp_proto_T', type=float, default=0.1, help='prototype contrastive 温度 T')
     parser.add_argument('--pp_phase3_geom_boost', type=float, default=0.35,
                         help='phase3 对 tau/delta 几何项的额外放大（随 Norm）')
+    parser.add_argument('--pp_tau_ceiling', type=float, default=0.99,
+                        help='Phase2/3 置信门槛上限；0 恢复 REV10 不设上限，建议对照 0.99')
+    parser.add_argument('--pp_complete_gate', type=int, choices=(0, 1), default=1,
+                        help='1=Phase2 完成 gate 退火后才允许退出（包括超时）；0=REV10 gate>=0.95')
+    parser.add_argument('--pp_unknown_b_conf', type=int, choices=(0, 1), default=1,
+                        help='1=未知几何的 B 分数/权重回退为置信度；0=REV10 混合未知间隔')
     parser.add_argument('--pp_gate_anneal_ratio', type=float, default=0.15,
                         help='warmup 结束后，将 tau/delta 从 Phase1 余弦退火到目标值的轮数占比')
     parser.add_argument('--pp_warmup_aux_ratio', type=float, default=0.3,
                         help='warmup 最后这段比例内逐步加入 L_proto 与 B 桶，避免 Phase1 过弱')
     parser.add_argument('--pp_adaptive', type=int, default=1,
-                        help='1=按精度/覆盖率动态调 A/B 门槛并自动切阶段；0=固定比例')
+                        help='1=按停留轮数/gate/A覆盖率推进阶段，不按GT调门槛；0=固定比例')
     parser.add_argument('--pp_adapt_ema', type=float, default=0.8, help='调度指标 EMA 系数')
     parser.add_argument('--pp_adapt_step', type=float, default=0.008, help='每轮门槛调整步长')
     parser.add_argument('--pp_target_a_prec', type=float, default=0.90, help='A 桶目标精度')
@@ -245,6 +251,8 @@ def args_parser():
         raise FileNotFoundError(f'--config 指定的 YAML 不存在: {yp}')
 
     args = parser.parse_args()
+    if not (args.pp_tau_ceiling == 0 or 0 < args.pp_tau_ceiling < 1):
+        parser.error('--pp_tau_ceiling 必须为 0（旧行为）或严格介于 0 与 1 之间')
     if getattr(args, 'sample_seed', None) is None:
         args.sample_seed = int(args.seed)
     return args

@@ -1,4 +1,4 @@
-# 对齐 PPFPSL α=0.1.csv（最好 81.3%@193）的设定
+# REV11：无 cap；概率门槛限幅、完整 gate 过渡、未知几何 B 回退
 #   bash scripts/train.sh --dataset CIFAR10 --alpha 0.1 --gpu_id <空闲卡>
 # 每次启动带时间戳，不覆盖旧实验
 
@@ -62,6 +62,9 @@ delta0: 0.10
 pp_a: 0.08
 pp_b: 0.06
 pp_phase3_geom_boost: 0.15
+pp_tau_ceiling: 0.99
+pp_complete_gate: 1
+pp_unknown_b_conf: 1
 pp_m0: 0.05
 pp_mT: 0.08
 pp_b_min_margin: 0.0
