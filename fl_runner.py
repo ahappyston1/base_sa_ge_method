@@ -335,6 +335,7 @@ def _geometry_controls(args) -> Dict[str, Any]:
         "tau_ceiling": float(getattr(args, "pp_tau_ceiling", 0.99)),
         "complete_gate": int(getattr(args, "pp_complete_gate", 1)),
         "unknown_b_conf": int(getattr(args, "pp_unknown_b_conf", 1)),
+        "phase3_geom_boost": float(getattr(args, "pp_phase3_geom_boost", 0.0)),
     }
 
 

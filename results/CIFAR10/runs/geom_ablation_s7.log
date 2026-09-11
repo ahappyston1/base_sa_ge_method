@@ -1,0 +1,8 @@
+[geom-ablation] gpu=0 workers=16 seed=7 partition=0 only_unknown=0
+[geom-ablation] 学习率沿用 YAML，不在本组覆盖
+[geom-ablation] geom_diag_s7 pid=2074853 -> results/CIFAR10/runs/geom_diag_s7_a0.1/launch.out
+[geom-ablation] geom_cur_s7 pid=2075045 -> results/CIFAR10/runs/geom_cur_s7_a0.1/launch.out
+[geom-ablation] geom_noboost_s7 pid=2075234 -> results/CIFAR10/runs/geom_noboost_s7_a0.1/launch.out
+[geom-ablation] geom_diag_s7 完成
+[geom-ablation] geom_cur_s7 完成
+[geom-ablation] geom_noboost_s7 完成
