@@ -99,6 +99,11 @@ def args_parser():
                              '8 约提速 5 倍。worker 由 torch 按 base_seed+worker_id 播种，仍可复现，'
                              '但与不同 num_workers 的历史 run 不再逐位一致')
     parser.add_argument('--lr_local_training', type=float, default=0.1)
+    parser.add_argument('--lr_mid_factor', type=float, default=1.0, help='LR multiplier ramp; 1=baseline, 0.5=contrast')
+    parser.add_argument('--lr_mid_start', type=int, default=60)
+    parser.add_argument('--lr_mid_end', type=int, default=90)
+    parser.add_argument('--lr_min', type=float, default=1e-4,
+                        help='PPFPSL cosine LR floor; 1e-4 preserves REV11, try 0.001 for a tail-only contrast')
     parser.add_argument('--lr_distillation_training', type=float, default=0.1)
 
     # 各数据集根目录（需含 torchvision 或 CINIC 标准文件夹结构）
@@ -212,8 +217,12 @@ def args_parser():
                         help='Phase2/3 置信门槛上限；0 恢复 REV10 不设上限，建议对照 0.99')
     parser.add_argument('--pp_complete_gate', type=int, choices=(0, 1), default=1,
                         help='1=Phase2 完成 gate 退火后才允许退出（包括超时）；0=REV10 gate>=0.95')
-    parser.add_argument('--pp_unknown_b_conf', type=int, choices=(0, 1), default=1,
-                        help='1=未知几何的 B 分数/权重回退为置信度；0=REV10 混合未知间隔')
+    parser.add_argument('--pp_b_conf_rescue', type=int, choices=(0, 1), default=0,
+                        help='1=置信度达eta_B也可进B；仍检查B间隔、保留原可靠性KL权重；默认0旧路由')
+    parser.add_argument('--pp_geom_mode', choices=('legacy', 'trusted'), default='legacy',
+                        help='legacy=current geometry; trusted=fresh labeled references with measured authority')
+    parser.add_argument('--pp_trust_min_count', type=int, default=4,
+                        help='Minimum unique labeled examples per local class for trusted geometry')
     parser.add_argument('--pp_gate_anneal_ratio', type=float, default=0.15,
                         help='warmup 结束后，将 tau/delta 从 Phase1 余弦退火到目标值的轮数占比')
     parser.add_argument('--pp_warmup_aux_ratio', type=float, default=0.3,
@@ -251,6 +260,14 @@ def args_parser():
         raise FileNotFoundError(f'--config 指定的 YAML 不存在: {yp}')
 
     args = parser.parse_args()
+    if args.pp_trust_min_count < 4:
+        parser.error('pp_trust_min_count must be >= 4 for disjoint support/query splits')
+    if args.pp_geom_mode == 'trusted' and (args.pp_teacher or args.pp_b_conf_rescue):
+        parser.error('trusted geometry requires student pseudo-labels and pp_b_conf_rescue=0')
+    if not (0 <= args.lr_mid_start < args.lr_mid_end and 0 < args.lr_mid_factor <= 1):
+        parser.error("Require 0 <= lr_mid_start < lr_mid_end and 0 < lr_mid_factor <= 1")
+    if not (0 < args.lr_min <= args.lr_local_training < float('inf')):
+        parser.error('Require finite 0 < lr_min <= lr_local_training')
     if not (args.pp_tau_ceiling == 0 or 0 < args.pp_tau_ceiling < 1):
         parser.error('--pp_tau_ceiling 必须为 0（旧行为）或严格介于 0 与 1 之间')
     if getattr(args, 'sample_seed', None) is None:

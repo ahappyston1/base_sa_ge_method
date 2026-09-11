@@ -1,3 +1,4 @@
+# Fixed experiment: trusted
 # REV13：独立选择legacy/trusted几何，默认legacy；对照配置见configs/experiment_*.yaml
 #   bash scripts/train.sh --dataset CIFAR10 --alpha 0.1 --gpu_id <空闲卡>
 # 每次启动带时间戳，不覆盖旧实验
@@ -12,7 +13,7 @@ partition_seed: 0
 dataset: CIFAR10
 num_clients: 20
 num_online_clients: 8
-max_rounds: 0
+max_rounds: 300
 alpha: 0.1
 mu: 2
 
@@ -69,7 +70,7 @@ pp_phase3_geom_boost: 0.15
 pp_tau_ceiling: 0.99
 pp_complete_gate: 1
 pp_b_conf_rescue: 0  # independent contrast: recover score-rejected C into softly weighted B
-pp_geom_mode: legacy
+pp_geom_mode: trusted
 pp_trust_min_count: 4
 pp_m0: 0.05
 pp_mT: 0.08
@@ -101,3 +102,6 @@ pp_k0: 0.0
 pp_gamma: 1.0
 
 hce_tau: 0.95
+
+# Matched server experiment settings
+num_workers: 16

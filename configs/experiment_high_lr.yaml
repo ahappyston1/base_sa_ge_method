@@ -1,3 +1,4 @@
+# Fixed experiment: high_lr
 # REV13：独立选择legacy/trusted几何，默认legacy；对照配置见configs/experiment_*.yaml
 #   bash scripts/train.sh --dataset CIFAR10 --alpha 0.1 --gpu_id <空闲卡>
 # 每次启动带时间戳，不覆盖旧实验
@@ -12,7 +13,7 @@ partition_seed: 0
 dataset: CIFAR10
 num_clients: 20
 num_online_clients: 8
-max_rounds: 0
+max_rounds: 300
 alpha: 0.1
 mu: 2
 
@@ -22,7 +23,7 @@ batch_size_local_labeled: 128
 batch_size_local_unlabeled: 128
 batch_size_test: 512
 local_epochs: 5
-lr_local_training: 0.1
+lr_local_training: 0.15
 lr_mid_factor: 1.0  # independent contrast: 0.5
 lr_mid_start: 60
 lr_mid_end: 90
@@ -101,3 +102,6 @@ pp_k0: 0.0
 pp_gamma: 1.0
 
 hce_tau: 0.95
+
+# Matched server experiment settings
+num_workers: 16

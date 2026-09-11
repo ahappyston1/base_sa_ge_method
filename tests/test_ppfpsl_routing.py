@@ -35,6 +35,43 @@ class _Args:
     pp_gamma = 1.0
 
 
+def test_b_conf_rescue_preserves_a_weights_and_margin_exclusion():
+    # A; score-only C; negative-margin C; low-confidence C; existing B.
+    s = torch.tensor([.99, .80, .80, .40, .80])
+    m = torch.tensor([.30, .02, -.10, .02, .30])
+    rel = torch.tensor([.95, .45, .45, .40, .80])
+    args = (s, m, rel, rel, torch.full_like(s, .95), torch.full_like(s, .1),
+            torch.ones(5, dtype=torch.bool), 1., .6, 0., 0., 0.)
+    old = _route_phase23(*args)
+    new = _route_phase23(*args, b_conf_rescue=True)
+    assert torch.equal(old['in_A'], new['in_A'])
+    assert torch.equal(old['b_score'], new['b_score'])
+    assert old['in_B'].tolist() == [False, False, False, False, True]
+    assert new['in_B'].tolist() == [False, True, False, False, True]
+    _assert_partition(new['in_A'], new['in_B'], new['in_C'], 5)
+
+
+def test_b_conf_rescue_is_noop_at_gate_zero():
+    s = torch.tensor([.99, .80, .40])
+    rel = torch.tensor([.2, .1, .8])
+    args = (s, torch.zeros(3), rel, rel, torch.full_like(s, .95),
+            torch.full_like(s, -2.), torch.ones(3, dtype=torch.bool), 0., .6, 0., 0., 0.)
+    old = _route_phase23(*args)
+    new = _route_phase23(*args, b_conf_rescue=True)
+    for key in ('in_A', 'in_B', 'in_C', 'b_score'):
+        assert torch.equal(old[key], new[key])
+
+
+def test_unknown_geometry_retains_mixed_b_score_in_rev12():
+    s = torch.tensor([.8])
+    rel = torch.tensor([.5])
+    out = _route_phase23(s, torch.zeros(1), rel, rel, torch.tensor([.95]),
+                        torch.tensor([.1]), torch.ones(1, dtype=torch.bool),
+                        1., .6, 0., 0., 0., geom_ok=torch.zeros(1, dtype=torch.bool))
+    assert out['b_score'].item() == .5
+    assert out['in_C'].item()
+
+
 def test_phase1_exclusive_and_cover():
     s = torch.tensor([0.99, 0.96, 0.80, 0.50, 0.20])
     a, b, c, p = _route_phase1(s, tau=0.95, eta_B=0.60, aux_on=True, a_cap=0.0, b_cap=0.0)

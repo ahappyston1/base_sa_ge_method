@@ -41,10 +41,14 @@ import os
 import csv
 import time
 import json
+from trusted_geometry import refresh_reference, score_queries
+from training_dynamics import cosine_learning_rate, dynamics_row, lr_controls
+from update_diagnostics import update_rows
+from geometry_audit import accumulate as audit_accumulate, new_buffer as audit_buffer, append_rows as audit_append
 
 worker_num = 4
 # 当前唯一实现的 checkpoint 标记；旧 V1/V2 权重没有此字段，不会被误续训
-METHOD_REV = 11
+METHOD_REV = 13
 
 
 def _lerp(g, a, b):
@@ -82,6 +86,9 @@ def _run_paths(dataset, alpha, args) -> Dict[str, str]:
         "acc_path": os.path.join(run_dir, "acc.csv"),
         "metrics_path": os.path.join(run_dir, "metrics.csv"),
         "diag_path": os.path.join(run_dir, "diag.csv"),
+        "dynamics_path": os.path.join(run_dir, "dynamics.csv"),
+        "geometry_audit_path": os.path.join(run_dir, "geometry_audit.csv"),
+        "trust_reference_path": os.path.join(run_dir, "trust_reference.csv"),
         "ckpt_path": os.path.join(run_dir, "checkpoint.pt"),
         "resume_src": resume,
         "log_file": os.path.join(run_dir, "train.log"),
@@ -316,6 +323,7 @@ def _write_run_config(path: str, args, extra: Dict[str, Any]) -> None:
         "diag_s_lo": float(getattr(args, "diag_s_lo", 0.95)),
         "diag_s_hi": float(getattr(args, "diag_s_hi", 0.99)),
         "geometry_controls": _geometry_controls(args),
+        "lr_controls": lr_controls(args),
         "tau_warmup": float(args.tau_warmup),
         "tau0": float(args.tau0),
         "delta0": float(args.delta0),
@@ -332,9 +340,11 @@ def _write_run_config(path: str, args, extra: Dict[str, Any]) -> None:
 def _geometry_controls(args) -> Dict[str, Any]:
     """Training controls persisted for reproducible server runs."""
     return {
+        "mode": str(getattr(args, "pp_geom_mode", "legacy")),
+        "trust_min_count": int(getattr(args, "pp_trust_min_count", 4)),
         "tau_ceiling": float(getattr(args, "pp_tau_ceiling", 0.99)),
         "complete_gate": int(getattr(args, "pp_complete_gate", 1)),
-        "unknown_b_conf": int(getattr(args, "pp_unknown_b_conf", 1)),
+        "b_conf_rescue": int(getattr(args, "pp_b_conf_rescue", 0)),
         "phase3_geom_boost": float(getattr(args, "pp_phase3_geom_boost", 0.0)),
     }
 
@@ -738,12 +748,12 @@ def _route_phase23(
     b_min_m: float,
     m_floor: float = -2.0,
     geom_ok: Optional[torch.Tensor] = None,
-    unknown_b_conf: bool = True,
+    b_conf_rescue: bool = False,
 ) -> Dict[str, torch.Tensor]:
     """Phase2/3：置信度 + 随 gate 接入的几何。不含 GT。
 
-    未知几何（geom_ok=False）不参与间隔门槛比较，回退为只看置信度；
-    m̃=0.5 只用于软权重，不当成 m=0 去硬筛 A/B。
+    未知几何不参与间隔门槛比较；m̃=0.5进入混合分数和软权重。
+    不再为未知几何单独将B分数替换为置信度。
     """
     if geom_ok is None:
         geom_ok = torch.ones_like(s_i, dtype=torch.bool)
@@ -754,13 +764,12 @@ def _route_phase23(
     score_a = _lerp(g_gate, s_i, s_i * m_tilde)
     in_A = _cap_bucket(in_A, score_a, a_cap)
     b_score = _lerp(g_gate, s_i, r_i)
-    if unknown_b_conf:
-        # Missing geometry must not lower B admission or its KL weight.
-        # A eligibility and all valid-geometry rules remain unchanged.
-        b_score = torch.where(geom_ok, b_score, s_i)
     b_m_thr = _lerp(g_gate, m_floor, b_min_m)
     b_margin_ok = (~geom_ok) | (m_i >= b_m_thr)
-    in_B = _cap_bucket((~in_A) & (b_score >= eta_B) & b_margin_ok, b_score, b_cap)
+    b_score_ok = b_score >= eta_B
+    if b_conf_rescue:
+        b_score_ok = b_score_ok | (s_i >= eta_B)
+    in_B = _cap_bucket((~in_A) & b_score_ok & b_margin_ok, b_score, b_cap)
     in_C = (~in_A) & (~in_B)
     fail_geom = pass_s & geom_ok & ~((m_i >= delta_i) & keep_own)
     return {
@@ -797,7 +806,7 @@ def _diag_geom_c(
     1) 同一置信带 [s_lo,s_hi) 内，几何支持 vs 反对两组的伪标签正确率与数量、几何覆盖率
        —— 支持/反对用的是 A 的间隔门槛 delta_i。
     2) C 桶成因：纯低置信 / 满足置信版 B 却进 C。
-       - 几何缺失：~geom_ok（未知几何回退若生效，此项应接近 0）
+       - 几何缺失：~geom_ok（中性可靠性参与混合分数，可能导致拒收）
        - 有效几何挡住 B：geom_ok 且 m < b_m_thr（与 _route_phase23 的 B 间隔门槛一致，
          不是写死 m<0；Phase2 中 b_m_thr 随 gate 从 -2 插到 pp_b_min_margin）
        - 其余记入 other（主要是 r_i 混合后 b_score < eta_B）
@@ -1109,11 +1118,12 @@ class LocalPPFPSL:
             self.teacher.load_state_dict(global_params)
             self.teacher.eval()
 
-        # Cosine lr schedule：随通信轮数从 lr_local_training 衰减到 1e-4
-        cosine_lr = args.lr_local_training * 0.5 * (
-            1.0 + math.cos(math.pi * round_idx / max(1, args.num_rounds))
+        cosine_lr = cosine_learning_rate(
+            round_idx, args.lr_local_training, args.num_rounds,
+            float(getattr(args, "lr_min", 1e-4)),
+            int(getattr(args, "lr_mid_start", 60)), int(getattr(args, "lr_mid_end", 90)),
+            float(getattr(args, "lr_mid_factor", 1.0)),
         )
-        cosine_lr = max(cosine_lr, 1e-4)
         for pg in self.optimizer.param_groups:
             pg['lr'] = cosine_lr
 
@@ -1203,6 +1213,7 @@ class LocalPPFPSL:
             **loader_kw,
         )
 
+        audit_counts = audit_buffer(args.num_classes, self.device) if int(getattr(args, "diag_geom", 1)) and phase >= 2 else None
         log_acc = {
             "loss": 0.0,
             "L_sup": 0.0,
@@ -1251,7 +1262,23 @@ class LocalPPFPSL:
         # 总步数仍是 local_epochs × local_iter，未改变训练步数。
         it_l = iter(lab_loader)
         it_u = iter(u_loader)
+        trust_rows = []
+        trusted_mode = getattr(args, "pp_geom_mode", "legacy") == "trusted" and phase >= 2
         for _local_epoch in range(args.local_epochs):
+            trusted_ref = None
+            if trusted_mode:
+                trusted_ref = refresh_reference(
+                    self.model, data_client_labeled, to_tensor_normalize(args.dataset),
+                    args.num_classes, self.device, int(getattr(args, "pp_trust_min_count", 4)),
+                )
+                if int(getattr(args, "diag_geom", 1)):
+                    for cls in range(args.num_classes):
+                        trust_rows.append(dict(epoch=_local_epoch + 1, cls=cls,
+                            **{key: float(trusted_ref[key][cls]) for key in
+                               ("support_n", "query_n", "votes", "trust", "radius", "margin_floor",
+                                "distance_scale", "margin_scale")}))
+                log_acc["trust_refreshes"] = log_acc.get("trust_refreshes", 0) + 1
+                log_acc["trust_class_sum"] = log_acc.get("trust_class_sum", 0.0) + float(trusted_ref["trust"].sum())
             for _step in range(local_iter):
                 try:
                     x, y = next(it_l)
@@ -1289,7 +1316,9 @@ class LocalPPFPSL:
                 mix_valid = loc_valid | p_ref_valid
 
                 if args.lambda_proto > 0:
-                    L_proto = prototype_contrastive_loss(z_x, y, p_mix, mix_valid, args.pp_proto_T)
+                    proto_centers = trusted_ref["centers"] if trusted_mode else p_mix
+                    proto_valid = trusted_ref["valid"] if trusted_mode else mix_valid
+                    L_proto = prototype_contrastive_loss(z_x, y, proto_centers, proto_valid, args.pp_proto_T)
                 else:
                     L_proto = z_x.new_zeros(())
 
@@ -1371,46 +1400,75 @@ class LocalPPFPSL:
                         if args.lambda_proto > 0:
                             loss = loss + aux_scale * args.lambda_proto * L_proto
                 else:
-                    nr = norm_rho_in
-                    ceiling = float(getattr(args, "pp_tau_ceiling", 0.99))
-                    boost = args.pp_phase3_geom_boost if phase == 3 else 0.0
-                    tau_c, delta_c, raw_tau_c = _class_thresholds(
-                        nr, tau0_eff, delta0_eff, args.pp_a, args.pp_b, boost, ceiling
-                    )
+                    if trusted_mode:
+                        # Same current student, eval-only geometry forward: no BN updates or teacher labels.
+                        was_training = self.model.training
+                        self.model.eval()
+                        try:
+                            with torch.no_grad():
+                                zg, _ = self._forward_z_logits(uw)
+                        finally:
+                            self.model.train(was_training)
+                        tg = score_queries(zg, yhat, trusted_ref, g_gate, _step / max(1, local_iter))
+                        in_A, in_B, in_C, pass_s = _route_phase1(
+                            s_i, tau_warmup_eff, eta_B_eff, True, a_ratio_cap, b_ratio_cap,
+                        )
+                        tau_i = torch.full_like(s_i, tau_warmup_eff)
+                        raw_tau_i = tau_i
+                        # Audit score combines class-relative margin and absolute distance.
+                        m_i, geom_ok = tg["score"], tg["valid"]
+                        delta_i = torch.zeros_like(s_i)
+                        m_tilde = tg["reliability"]
+                        alpha_t = 1.0 - tg["authority"]
+                        r_i = s_i * tg["weight"]
+                        b_score = r_i
+                        fail_geom = torch.zeros_like(in_A)  # No geometry hard rejection in this mode.
+                        diag_z, diag_p, diag_valid = zg, trusted_ref["centers"], trusted_ref["valid"]
+                        log_acc["trust_authority_sum"] = log_acc.get("trust_authority_sum", 0.0) + float(tg["authority"].sum())
+                        log_acc["trust_valid_visits"] = log_acc.get("trust_valid_visits", 0) + int(geom_ok.sum())
+                    else:
+                        nr = norm_rho_in
+                        ceiling = float(getattr(args, "pp_tau_ceiling", 0.99))
+                        boost = args.pp_phase3_geom_boost if phase == 3 else 0.0
+                        tau_c, delta_c, raw_tau_c = _class_thresholds(
+                            nr, tau0_eff, delta0_eff, args.pp_a, args.pp_b, boost, ceiling
+                        )
 
-                    m_floor = -2.0
-                    tau_i = _lerp(g_gate, tau_warmup_eff, tau_c[yhat])
-                    delta_i = _lerp(g_gate, m_floor, delta_c[yhat])
-                    raw_tau_i = _lerp(g_gate, tau_warmup_eff, raw_tau_c[yhat])
+                        m_floor = -2.0
+                        tau_i = _lerp(g_gate, tau_warmup_eff, tau_c[yhat])
+                        delta_i = _lerp(g_gate, m_floor, delta_c[yhat])
+                        raw_tau_i = _lerp(g_gate, tau_warmup_eff, raw_tau_c[yhat])
 
-                    m_i, geom_ok, own_ok = _geom_margin(zw, yhat, p_mix, mix_valid)
-                    m0 = float(getattr(args, "pp_m0", 0.05))
-                    mT = float(getattr(args, "pp_mT", 0.08))
-                    m_tilde = _margin_reliability(m_i, m0, mT)
-                    m_tilde = torch.where(geom_ok, m_tilde, torch.full_like(m_tilde, 0.5))
-                    alpha_t = _blend_alpha(g_gate, nr[yhat], args)
-                    r_i = alpha_t * s_i + (1.0 - alpha_t) * m_tilde
+                        m_i, geom_ok, own_ok = _geom_margin(zw, yhat, p_mix, mix_valid)
+                        m0 = float(getattr(args, "pp_m0", 0.05))
+                        mT = float(getattr(args, "pp_mT", 0.08))
+                        m_tilde = _margin_reliability(m_i, m0, mT)
+                        m_tilde = torch.where(geom_ok, m_tilde, torch.full_like(m_tilde, 0.5))
+                        alpha_t = _blend_alpha(g_gate, nr[yhat], args)
+                        r_i = alpha_t * s_i + (1.0 - alpha_t) * m_tilde
 
-                    routed = _route_phase23(
-                        s_i,
-                        m_i,
-                        m_tilde,
-                        r_i,
-                        tau_i,
-                        delta_i,
-                        own_ok,
-                        g_gate,
-                        eta_B_eff,
-                        a_ratio_cap,
-                        b_ratio_cap,
-                        float(getattr(args, "pp_b_min_margin", 0.0)),
-                        m_floor,
-                        geom_ok,
-                        unknown_b_conf=bool(int(getattr(args, "pp_unknown_b_conf", 1))),
-                    )
-                    in_A, in_B, in_C = routed["in_A"], routed["in_B"], routed["in_C"]
-                    pass_s, fail_geom = routed["pass_s"], routed["fail_geom"]
-                    b_score = routed["b_score"]
+                        routed = _route_phase23(
+                            s_i,
+                            m_i,
+                            m_tilde,
+                            r_i,
+                            tau_i,
+                            delta_i,
+                            own_ok,
+                            g_gate,
+                            eta_B_eff,
+                            a_ratio_cap,
+                            b_ratio_cap,
+                            float(getattr(args, "pp_b_min_margin", 0.0)),
+                            m_floor,
+                            geom_ok,
+                            b_conf_rescue=bool(int(getattr(args, "pp_b_conf_rescue", 0))),
+                        )
+                        in_A, in_B, in_C = routed["in_A"], routed["in_B"], routed["in_C"]
+                        pass_s, fail_geom = routed["pass_s"], routed["fail_geom"]
+                        b_score = routed["b_score"]
+
+                        diag_z, diag_p, diag_valid = zw, p_mix, mix_valid
 
                     if int(getattr(args, "diag_geom", 1)):
                         for key, value in {
@@ -1420,12 +1478,23 @@ class LocalPPFPSL:
                             "dt_effective_ge1_n": int((tau_i >= 1.0).sum().item()),
                         }.items():
                             log_acc[key] = log_acc.get(key, 0) + value
-                        b_m_thr = _lerp(
+                        b_m_thr = 0.0 if trusted_mode else _lerp(
                             g_gate, m_floor, float(getattr(args, "pp_b_min_margin", 0.0))
                         )
+                        # Candidate mask independent of the rescue switch, for paired diagnostics.
+                        score_only = (~in_A) & (s_i >= eta_B_eff) & (b_score < eta_B_eff)
+                        score_only = score_only & ((~geom_ok) | (m_i >= b_m_thr))
+                        if trusted_mode:
+                            score_only = torch.zeros_like(score_only)  # legacy rescue diagnostic only
+                        for key, value in {
+                            "dyn_b_score_only_n": int(score_only.sum().item()),
+                            "dyn_b_score_only_correct": int((score_only & (yhat == y_u_gt)).sum().item()),
+                            "dyn_b_score_only_admitted": int((score_only & in_B).sum().item()),
+                        }.items():
+                            log_acc[key] = log_acc.get(key, 0) + value
                         dd = _diag_geom_c(
                             s_i, yhat, y_u_gt, m_i, delta_i, geom_ok, in_C,
-                            eta_B_eff, zw, p_mix, mix_valid,
+                            eta_B_eff, diag_z, diag_p, diag_valid,
                             float(getattr(args, "diag_s_lo", 0.95)),
                             float(getattr(args, "diag_s_hi", 0.99)),
                             b_m_thr=b_m_thr,
@@ -1433,14 +1502,20 @@ class LocalPPFPSL:
                         for _k, _v in dd.items():
                             log_acc[_k] = log_acc.get(_k, 0) + _v
 
-                    w_geom = (s_i ** args.w_gamma * m_tilde).clamp(args.w_min, 1.0)
-                    w_full = torch.zeros_like(s_i)
-                    if in_A.any():
-                        w_full[in_A] = _lerp(g_gate, torch.ones_like(w_geom[in_A]), w_geom[in_A])
+                    if trusted_mode:
+                        w_full = in_A.float() * tg["weight"]
+                    else:
+                        w_geom = (s_i ** args.w_gamma * m_tilde).clamp(args.w_min, 1.0)
+                        w_full = torch.zeros_like(s_i)
+                        if in_A.any():
+                            w_full[in_A] = _lerp(g_gate, torch.ones_like(w_geom[in_A]), w_geom[in_A])
                     # A 的可靠性权重不反传；有标 L_proto 仍通过原型对比更新特征
                     L_A, L_B = _unlabeled_ab_losses(
                         logs, logw, yhat, in_A, in_B, w_full, b_score, args.T
                     )
+                    if audit_counts is not None:
+                        audit_accumulate(audit_counts, s_i, yhat, y_u_gt, m_i, delta_i,
+                                         geom_ok, in_A, w_full)
                     log_acc["r_mean"] += float(r_i.mean().item())
                     log_acc["m_mean"] += float(m_i.mean().item())
                     log_acc["alpha_t"] += float(alpha_t.mean().item())
@@ -1500,6 +1575,22 @@ class LocalPPFPSL:
                         + (args.lambda_B * lambda_B_scale) * L_B
                         + args.lambda_proto * L_proto
                     )
+
+                if int(getattr(args, "diag_geom", 1)):
+                    # Read-only: GT never changes weights, routing, or losses.
+                    with torch.no_grad():
+                        wa_diag = w_A.detach() if phase == 1 else w_full.detach()
+                        wb_diag = (s_i if phase == 1 else b_score).detach() * in_B
+                        wa_diag = wa_diag * (args.lambda_A * lambda_A_scale)
+                        wb_diag = wb_diag * (args.lambda_B * lambda_B_scale)
+                        if phase == 1:
+                            wb_diag = wb_diag * aux_scale
+                        wrong_diag = yhat != y_u_gt
+                        for bucket, weights_diag in (("a", wa_diag), ("b", wb_diag)):
+                            for suffix, value in (("mass", weights_diag.sum()),
+                                                  ("wrong", weights_diag[wrong_diag].sum())):
+                                key = "dyn_" + bucket + "_" + suffix
+                                log_acc[key] = log_acc.get(key, 0.0) + float(value.item())
 
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
@@ -1611,6 +1702,8 @@ class LocalPPFPSL:
             "loc_valid": loc_new.detach().cpu(),
             "inited": True,
             "log": log_final,
+            "geometry_audit": audit_counts.cpu().tolist() if audit_counts is not None else None,
+            "trust_rows": trust_rows,
         }
 
         proto_upload = {
@@ -1791,7 +1884,7 @@ def fixmatch(alpha):
         f"p2_exit_A={getattr(args,'pp_phase2_exit_a_ratio',0)} "
         f"tau_w={args.tau_warmup} tau0={args.tau0} d0={args.delta0} etaB={args.eta_B} "
         f"pp_b={args.pp_b} p3_boost={getattr(args,'pp_phase3_geom_boost',0)} "
-        f"pp_a={args.pp_a} geom_controls={_geometry_controls(args)} "
+        f"pp_a={args.pp_a} geom_controls={_geometry_controls(args)} lr_controls={lr_controls(args)} "
         f"raw_tau_max={args.tau0 + args.pp_a * (1 + args.pp_phase3_geom_boost):.4f} "
         f"teacher={getattr(args,'pp_teacher',0)} mu_p={args.mu_p} "
         f"lA={args.lambda_A} lB={args.lambda_B} lP={args.lambda_proto} "
@@ -1938,6 +2031,8 @@ def fixmatch(alpha):
         else:
             if ckpt.get('geometry_controls') != _geometry_controls(args):
                 raise ValueError('Geometry controls differ from checkpoint; restore flags or start a fresh run')
+            if ckpt.get('lr_controls') != lr_controls(args):
+                raise ValueError('LR controls missing or different in checkpoint; start a fresh run without --resume')
             print(f'[Resume] 从 {load_ckpt} 恢复，保存到 {ckpt_path}')
             global_model.model.load_state_dict(ckpt['global_model'])
             global_model.p_ref = ckpt['p_ref'].to(global_model.p_ref.device)
@@ -1985,12 +2080,34 @@ def fixmatch(alpha):
                 lc,                   
                 snap,
             )
+            trust_rows = st_new.pop("trust_rows", [])
+            if trust_rows:
+                trust_path = paths["trust_reference_path"]
+                new_file = not os.path.exists(trust_path)
+                records = [dict(round=r, client=int(client), **row) for row in trust_rows]
+                with open(trust_path, "a", newline="", encoding="utf-8") as f:
+                    writer = csv.DictWriter(f, fieldnames=list(records[0]))
+                    if new_file:
+                        writer.writeheader()
+                    writer.writerows(records)
+            audit_rows = st_new.pop("geometry_audit", None)
+            if audit_rows is not None:
+                audit_append(paths["geometry_audit_path"], r, int(snap["phase"]), int(client), audit_rows)
             client_states[client] = st_new
             proto_uploads.append(up)
             list_dicts_local_params.append(copy.deepcopy(local_params))
             log_rows.append(st_new.get('log', {}))
 
         fedavg_params = global_model.initialize_for_model_fusion(list_dicts_local_params, list_nums_local_data)
+
+        # Capture before fedavg_eval loads new weights into global_state's owner.
+        update_summary, update_clients = {}, []
+        if int(getattr(args, "diag_geom", 1)):
+            update_summary, update_clients = update_rows(
+                dict_global_params, list_dicts_local_params, fedavg_params,
+                list_nums_local_data, online_clients,
+                [name for name, _ in global_model.model.named_parameters()],
+            )
 
         if proto_uploads:
             dev = global_model.p_ref.device
@@ -2150,6 +2267,7 @@ def fixmatch(alpha):
             'schedule': schedule.state_dict(),
             'method_rev': METHOD_REV,
             'geometry_controls': _geometry_controls(args),
+            'lr_controls': lr_controls(args),
             'run_id': paths["run_id"],
         }, ckpt_path)
 
@@ -2179,6 +2297,27 @@ def fixmatch(alpha):
             _append_metrics_row(paths["metrics_path"], mr, first_round=(r == 1))
 
             if int(getattr(args, "diag_geom", 1)):
+                update_context = dict(round=r, phase=ph, gate=g_avg, lr=_mean('lr'),
+                                      acc=global_acc,
+                                      delta_acc=(global_acc - fedavg_acc[-2]
+                                                 if len(fedavg_acc) > 1 else float('nan')))
+                _append_diag_row(
+                    os.path.join(paths["run_dir"], "updates.csv"),
+                    dict(update_context, **update_summary), first_round=(r == 1),
+                )
+                for i, row in enumerate(update_clients):
+                    local_log = log_rows[i]
+                    row.update(local_steps=local_log.get('n_batches', 0),
+                               a_ratio=local_log.get('cnt_a', 0) / max(local_log.get('cnt_u', 0), 1),
+                               a_prec=local_log.get('a_correct', 0) / max(local_log.get('a_total', 0), 1))
+                    _append_diag_row(
+                        os.path.join(paths["run_dir"], "client_updates.csv"),
+                        dict(update_context, **row), first_round=(r == 1 and i == 0),
+                    )
+                _append_diag_row(
+                    paths["dynamics_path"], dynamics_row(r, ph, log_rows, args),
+                    first_round=(r == 1),
+                )
                 diag_agg = {
                     k: sum(int(row.get(k, 0)) for row in log_rows)
                     for k in _DIAG_KEYS
