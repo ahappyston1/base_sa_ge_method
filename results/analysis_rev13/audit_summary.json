@@ -1,0 +1,373 @@
+{
+  "reference": {
+    "136-200": {
+      "geometry": {
+        "oppose": {
+          "visits": 3402253.0,
+          "correct": 1368828.0,
+          "a_visits": 0.0,
+          "a_correct": 0.0,
+          "a_weight": 0.0,
+          "a_wrong_weight": 0.0,
+          "precision": 0.4023298678846047,
+          "a_precision": null
+        },
+        "support": {
+          "visits": 9244147.0,
+          "correct": 6936890.0,
+          "a_visits": 7981126.0,
+          "a_correct": 6307663.0,
+          "a_weight": 7525542.191387236,
+          "a_wrong_weight": 1541190.790872991,
+          "precision": 0.7504088803434217,
+          "a_precision": 0.7903224432241767
+        }
+      },
+      "matched_A_weight_gap": 0.01800331372036486,
+      "matched_strata": 10594,
+      "matched_positive_fraction": 0.8601820318337725
+    },
+    "201-270": {
+      "geometry": {
+        "support": {
+          "visits": 11288794.0,
+          "correct": 8962925.0,
+          "a_visits": 9448569.0,
+          "a_correct": 7948277.0,
+          "a_weight": 9131155.017627537,
+          "a_wrong_weight": 1410785.9635948539,
+          "precision": 0.7939665654276267,
+          "a_precision": 0.8412148971976603
+        },
+        "oppose": {
+          "visits": 2330406.0,
+          "correct": 992587.0,
+          "a_visits": 0.0,
+          "a_correct": 0.0,
+          "a_weight": 0.0,
+          "a_wrong_weight": 0.0,
+          "precision": 0.4259287866577755,
+          "a_precision": null
+        }
+      },
+      "matched_A_weight_gap": 0.010971055503734381,
+      "matched_strata": 13480,
+      "matched_positive_fraction": 0.8315839963296248
+    },
+    "271-300": {
+      "geometry": {
+        "support": {
+          "visits": 4900355.0,
+          "correct": 4227347.0,
+          "a_visits": 3990613.0,
+          "a_correct": 3676515.0,
+          "a_weight": 3881145.304700911,
+          "a_wrong_weight": 294382.99080091715,
+          "precision": 0.8626613786144065,
+          "a_precision": 0.9212907891594599
+        },
+        "oppose": {
+          "visits": 936445.0,
+          "correct": 440178.0,
+          "a_visits": 0.0,
+          "a_correct": 0.0,
+          "a_weight": 0.0,
+          "a_wrong_weight": 0.0,
+          "precision": 0.4700521653700965,
+          "a_precision": null
+        }
+      },
+      "matched_A_weight_gap": 0.006739129114326598,
+      "matched_strata": 6318,
+      "matched_positive_fraction": 0.7553476370150695
+    }
+  },
+  "high_lr": {
+    "136-200": {
+      "geometry": {
+        "oppose": {
+          "visits": 3249466.0,
+          "correct": 1289435.0,
+          "a_visits": 0.0,
+          "a_correct": 0.0,
+          "a_weight": 0.0,
+          "a_wrong_weight": 0.0,
+          "precision": 0.39681443043256953,
+          "a_precision": null
+        },
+        "support": {
+          "visits": 9396934.0,
+          "correct": 6973240.0,
+          "a_visits": 8030583.0,
+          "a_correct": 6309897.0,
+          "a_weight": 7617613.464900076,
+          "a_wrong_weight": 1594845.1189283133,
+          "precision": 0.7420760856679424,
+          "a_precision": 0.7857333645639426
+        }
+      },
+      "matched_A_weight_gap": 0.016799179383477487,
+      "matched_strata": 10394,
+      "matched_positive_fraction": 0.8529281428072425
+    },
+    "201-270": {
+      "geometry": {
+        "support": {
+          "visits": 11455039.0,
+          "correct": 9113005.0,
+          "a_visits": 9614661.0,
+          "a_correct": 8116289.0,
+          "a_weight": 9325679.732413888,
+          "a_wrong_weight": 1416411.732648015,
+          "precision": 0.7955455236773965,
+          "a_precision": 0.8441575839231357
+        },
+        "oppose": {
+          "visits": 2164161.0,
+          "correct": 908687.0,
+          "a_visits": 0.0,
+          "a_correct": 0.0,
+          "a_weight": 0.0,
+          "a_wrong_weight": 0.0,
+          "precision": 0.41987957457878594,
+          "a_precision": null
+        }
+      },
+      "matched_A_weight_gap": 0.009764887672634346,
+      "matched_strata": 13100,
+      "matched_positive_fraction": 0.8274314948948425
+    },
+    "271-300": {
+      "geometry": {
+        "support": {
+          "visits": 5008741.0,
+          "correct": 4386633.0,
+          "a_visits": 4135422.0,
+          "a_correct": 3845341.0,
+          "a_weight": 4035430.6634641886,
+          "a_wrong_weight": 272709.1183079481,
+          "precision": 0.8757955342470294,
+          "a_precision": 0.9298545589785033
+        },
+        "oppose": {
+          "visits": 828059.0,
+          "correct": 390401.0,
+          "a_visits": 0.0,
+          "a_correct": 0.0,
+          "a_weight": 0.0,
+          "a_wrong_weight": 0.0,
+          "precision": 0.47146519752819543,
+          "a_precision": null
+        }
+      },
+      "matched_A_weight_gap": 0.006814879605251595,
+      "matched_strata": 6346,
+      "matched_positive_fraction": 0.76515266595777
+    }
+  },
+  "trusted": {
+    "136-200": {
+      "geometry": {
+        "oppose": {
+          "visits": 6092525.0,
+          "correct": 2962501.0,
+          "a_visits": 3077794.0,
+          "a_correct": 1882477.0,
+          "a_weight": 2143050.500582397,
+          "a_wrong_weight": 752500.8869228363,
+          "precision": 0.486251759328029,
+          "a_precision": 0.6116319025899719
+        },
+        "support": {
+          "visits": 4743958.0,
+          "correct": 4195941.0,
+          "a_visits": 4539392.0,
+          "a_correct": 4070435.0,
+          "a_weight": 4539392.0,
+          "a_wrong_weight": 468957.0,
+          "precision": 0.8844810599082032,
+          "a_precision": 0.8966916714837582
+        },
+        "unknown": {
+          "visits": 1809917.0,
+          "correct": 1615810.0,
+          "a_visits": 1053704.0,
+          "a_correct": 1014678.0,
+          "a_weight": 1053704.0,
+          "a_wrong_weight": 39026.0,
+          "precision": 0.8927536456091633,
+          "a_precision": 0.962963033261713
+        }
+      },
+      "matched_A_weight_gap": 0.11436278722398018,
+      "matched_strata": 12635,
+      "matched_positive_fraction": 0.9375963609493814
+    },
+    "201-270": {
+      "geometry": {
+        "unknown": {
+          "visits": 3009293.0,
+          "correct": 2629654.0,
+          "a_visits": 2037160.0,
+          "a_correct": 1940831.0,
+          "a_weight": 2037160.0,
+          "a_wrong_weight": 96329.0,
+          "precision": 0.8738444544947933,
+          "a_precision": 0.952714072532349
+        },
+        "oppose": {
+          "visits": 5820180.0,
+          "correct": 3328523.0,
+          "a_visits": 3095507.0,
+          "a_correct": 2184794.0,
+          "a_weight": 2184509.0547040105,
+          "a_wrong_weight": 561888.6218701601,
+          "precision": 0.5718934809576336,
+          "a_precision": 0.7057952057611241
+        },
+        "support": {
+          "visits": 4789727.0,
+          "correct": 4538473.0,
+          "a_visits": 4712972.0,
+          "a_correct": 4482480.0,
+          "a_weight": 4712972.0,
+          "a_wrong_weight": 230492.0,
+          "precision": 0.9475431480750365,
+          "a_precision": 0.9510941291397446
+        }
+      },
+      "matched_A_weight_gap": 0.13243992593458698,
+      "matched_strata": 14364,
+      "matched_positive_fraction": 0.9049885960466295
+    },
+    "271-300": {
+      "geometry": {
+        "oppose": {
+          "visits": 2137496.0,
+          "correct": 1370984.0,
+          "a_visits": 1002434.0,
+          "a_correct": 801132.0,
+          "a_weight": 742661.8063682318,
+          "a_wrong_weight": 128617.18499660492,
+          "precision": 0.6413972236673191,
+          "a_precision": 0.7991867793789915
+        },
+        "support": {
+          "visits": 2016745.0,
+          "correct": 1962557.0,
+          "a_visits": 1987197.0,
+          "a_correct": 1936389.0,
+          "a_weight": 1987197.0,
+          "a_wrong_weight": 50808.0,
+          "precision": 0.9731309610287865,
+          "a_precision": 0.9744323285512206
+        },
+        "unknown": {
+          "visits": 1682559.0,
+          "correct": 1382403.0,
+          "a_visits": 1181839.0,
+          "a_correct": 1105259.0,
+          "a_weight": 1181839.0,
+          "a_wrong_weight": 76580.0,
+          "precision": 0.8216074443749075,
+          "a_precision": 0.9352026798912543
+        }
+      },
+      "matched_A_weight_gap": 0.0972756674003063,
+      "matched_strata": 6480,
+      "matched_positive_fraction": 0.786300830997689
+    }
+  },
+  "historical": [
+    {
+      "run": "20260908_195152_a1",
+      "rounds": 300,
+      "best": 0.8631,
+      "last30": 0.86112
+    },
+    {
+      "run": "rev13_high_lr_s7_20260912_003221_3951932_a0.1",
+      "rounds": 300,
+      "best": 0.8531,
+      "last30": 0.84852
+    },
+    {
+      "run": "base500_s7_a0.1",
+      "rounds": 500,
+      "best": 0.8519,
+      "last30": 0.8496366666666667
+    },
+    {
+      "run": "20260908_195152_a0.5",
+      "rounds": 300,
+      "best": 0.8515,
+      "last30": 0.8484733333333333
+    },
+    {
+      "run": "rev13_trusted_s7_20260912_003213_3951726_a0.1",
+      "rounds": 300,
+      "best": 0.8372,
+      "last30": 0.8337
+    },
+    {
+      "run": "geom_cur_s7_a0.1",
+      "rounds": 300,
+      "best": 0.834,
+      "last30": 0.8281933333333333
+    },
+    {
+      "run": "geom_diag_s7_a0.1",
+      "rounds": 300,
+      "best": 0.8331,
+      "last30": 0.8284666666666667
+    },
+    {
+      "run": "base_s17_a0.1",
+      "rounds": 300,
+      "best": 0.8323,
+      "last30": 0.8289133333333334
+    },
+    {
+      "run": "geom_noboost_s7_a0.1",
+      "rounds": 300,
+      "best": 0.8323,
+      "last30": 0.8284966666666667
+    },
+    {
+      "run": "rev13_reference_s7_20260912_003229_3952273_a0.1",
+      "rounds": 300,
+      "best": 0.8315,
+      "last30": 0.8277833333333333
+    },
+    {
+      "run": "capA_s7_a0.1",
+      "rounds": 300,
+      "best": 0.8313,
+      "last30": 0.8267066666666667
+    },
+    {
+      "run": "20260908_195152_a0.1",
+      "rounds": 300,
+      "best": 0.8311,
+      "last30": 0.8268333333333333
+    },
+    {
+      "run": "capA_s17_a0.1",
+      "rounds": 300,
+      "best": 0.8243,
+      "last30": 0.8203400000000001
+    },
+    {
+      "run": "20260907_174541_a0.1",
+      "rounds": 37,
+      "best": 0.4589,
+      "last30": 0.36794333333333334
+    },
+    {
+      "run": "20260907_235251_a0.1",
+      "rounds": 75,
+      "best": 0.4256,
+      "last30": 0.26817
+    }
+  ]
+}

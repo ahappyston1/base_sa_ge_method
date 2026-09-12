@@ -1,5 +1,8 @@
 # REV13: two experiments in one repository
 
+The next three-run follow-up is documented in [three_experiments.md](three_experiments.md).
+The original recipes and commands below retain their original settings.
+
 No separate Git branches are necessary. Both experiments use the same entry
 point and select behavior with pp_geom_mode. Configurations are full snapshots,
 not partial overlays. The default YAML remains legacy geometry with LR=0.1.

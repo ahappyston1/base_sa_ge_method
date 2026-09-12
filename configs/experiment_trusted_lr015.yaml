@@ -1,0 +1,107 @@
+# Fixed experiment: trusted_lr015
+# REV13：独立选择legacy/trusted几何，默认legacy；对照配置见configs/experiment_*.yaml
+#   bash scripts/train.sh --dataset CIFAR10 --alpha 0.1 --gpu_id <空闲卡>
+# 每次启动带时间戳，不覆盖旧实验
+
+# ----- 方法 / 设备 -----
+gpu_id: 0
+seed: 7
+partition_seed: 0
+# sample_seed 默认等于 seed；只影响每轮在线客户端抽样
+
+# ----- 数据与联邦 -----
+dataset: CIFAR10
+num_clients: 20
+num_online_clients: 8
+max_rounds: 300
+alpha: 0.1
+mu: 2
+
+# ----- 训练批量与优化 -----
+batch_size_local_labeled_fixmatch: 128
+batch_size_local_labeled: 128
+batch_size_local_unlabeled: 128
+batch_size_test: 512
+local_epochs: 5
+lr_local_training: 0.15
+lr_mid_factor: 1.0  # independent contrast: 0.5
+lr_mid_start: 60
+lr_mid_end: 90
+lr_min: 0.0001  # tail-only contrast: --lr_min 0.001; unchanged before round 281/300
+
+# ----- 原 SAGE / FixMatch 共用 -----
+T: 1.0
+threshold: 0.95
+lambda_u: 1.0
+
+# ----- 阶段：按轮数开 B（约 r64），约 r90 出 Phase1 -----
+pp_adaptive: 1
+pp_warmup_ratio: 0.30
+pp_geom_ratio: 0.25
+pp_gate_anneal_ratio: 0.15
+pp_warmup_aux_ratio: 0.30
+pp_warmup_min_ratio: 0.30
+pp_warmup_max_ratio: 0.40
+pp_geom_min_ratio: 0.12
+pp_geom_max_ratio: 0.35
+pp_phase1_exit_a_prec: 0.70   # 仅日志；切阶段不再用无标 GT / 测试 Acc
+pp_phase1_exit_acc: 0.58
+pp_phase2_exit_a_ratio: 0.08  # 桶占比，不含真标签
+
+# ----- 门槛（该次实验 τ/η/δ 未自适应改动）-----
+pp_adapt_ema: 0.8
+pp_adapt_step: 0.008
+pp_target_a_prec: 0.90
+pp_target_a_ratio: 0.22
+pp_target_b_prec: 0.75
+pp_a_ratio_cap: 0.0
+pp_a_ratio_cap_p1: 0.0
+pp_proto_a_prec: 0.85
+pp_dirty_a_step_mult: 3.0
+pp_min_c_ratio: 0.15
+
+tau_warmup: 0.95
+
+tau0: 0.92
+delta0: 0.10
+pp_a: 0.08
+pp_b: 0.06
+pp_phase3_geom_boost: 0.15
+pp_tau_ceiling: 0.99
+pp_complete_gate: 1
+pp_b_conf_rescue: 0  # independent contrast: recover score-rejected C into softly weighted B
+pp_geom_mode: trusted
+pp_trust_min_count: 4
+pp_m0: 0.05
+pp_mT: 0.08
+pp_b_min_margin: 0.0
+
+lambda_p: 0.5
+pp_lambda_mix: 0.6
+mu_p: 0.97
+lambda_proto: 0.1
+pp_proto_T: 0.2
+
+mu_rho: 0.9
+pp_eps: 1.0e-6
+pp_min_class_count: 5
+
+eta_B: 0.60
+w_min: 0.05
+w_gamma: 1.0
+w_Tp: 1.0
+lambda_A: 1.0
+lambda_B: 1.0
+pp_teacher: 0
+pp_b_ratio_cap: 0.0
+
+alpha0: 0.80
+alpha_min: 0.30
+alpha_max: 0.95
+pp_k0: 0.0
+pp_gamma: 1.0
+
+hce_tau: 0.95
+
+# Matched server experiment settings
+num_workers: 16

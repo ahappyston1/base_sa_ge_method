@@ -57,6 +57,9 @@ Before running, please ensure the dataset paths are correctly set in `options.py
 
 ### Usage
 
+最新三组后续实验（trusted + 0.15 / legacy + 0.15 × 500轮 / legacy + 0.20）
+的服务器命令、调度说明与验证步骤见 [docs/three_experiments.md](docs/three_experiments.md)。
+
 ```bash
 # 单次实验
 bash scripts/train.sh --dataset CIFAR10 --alpha 0.1 --gpu_id 0
