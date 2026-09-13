@@ -2,11 +2,26 @@
 import math
 
 
+def schedule_rounds(args):
+    """Zero preserves legacy behavior; an explicit horizon decouples extra tail rounds."""
+    return int(getattr(args, 'baseline_schedule_rounds', 0) or args.num_rounds)
+
+
+def trusted_weight_gate(round_idx, standard_gate, args):
+    """Optional early weight ramp; never moves the phase/loss/reference-loss schedule."""
+    start = int(getattr(args, 'trusted_weight_start', 0))
+    if not start:
+        return float(standard_gate)
+    end = int(args.trusted_weight_end)
+    t = min(1., max(0., (round_idx-start)/float(end-start)))
+    return max(float(standard_gate), .5*(1-math.cos(math.pi*t)))
+
+
 def lr_controls(args):
     return {
         "initial": float(args.lr_local_training),
         "minimum": float(getattr(args, "lr_min", 1e-4)),
-        "rounds": int(args.num_rounds),
+        "rounds": schedule_rounds(args),
         "mid_start": int(getattr(args, "lr_mid_start", 60)),
         "mid_end": int(getattr(args, "lr_mid_end", 90)),
         "mid_factor": float(getattr(args, "lr_mid_factor", 1.0)),
@@ -74,4 +89,6 @@ def dynamics_row(round_idx, phase, logs, args):
     row["trust_authority_mean"] = total("trust_authority_sum") / max(n, 1)
     row["trust_valid_fraction"] = total("trust_valid_visits") / max(n, 1)
     row["trust_refreshes"] = int(total("trust_refreshes"))
+    if getattr(args, 'trusted_weight_start', 0):
+        row['trusted_weight_gate'] = sum(float(x.get('trusted_weight_gate', 0)) * float(x['n_batches']) for x in logs) / max(steps, 1)
     return row

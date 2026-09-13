@@ -17,8 +17,11 @@ if ROOT not in sys.path:
 
 if __name__ == '__main__':
     from options import args_parser
-    import fl_runner
-
     args = args_parser()
-    fl_runner.apply_run_seeds(args)
-    fl_runner.fixmatch(args.alpha)
+    if args.experiment_engine == 'trusted_multi':
+        from trusted_multi_runner import run
+        run(args)
+    else:
+        import fl_runner
+        fl_runner.apply_run_seeds(args)
+        fl_runner.fixmatch(args.alpha)

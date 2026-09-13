@@ -195,7 +195,7 @@ def args_parser():
     parser.add_argument('--lambda_B', type=float, default=1.0)
     parser.add_argument('--lambda_proto', type=float, default=0.1)
     parser.add_argument('--pp_teacher', type=int, default=0,
-                        help='1=弱视图用冻结全局教师；0=学生弱视图（与 81% 实验一致）')
+                        help='1=弱视图用冻结全局教师；0=学生弱视图（与 81%% 实验一致）')
     parser.add_argument('--pp_b_ratio_cap', type=float, default=0.0,
                         help='B 桶占无标签上限；0 表示不截断')
     parser.add_argument('--mu_p', type=float, default=0.99, help='本地原型 EMA')
@@ -253,6 +253,26 @@ def args_parser():
     parser.add_argument('--hce_tau', type=float, default=0.95, help='HCE 高置信统计阈值')
     parser.add_argument('--use_tensorboard', action='store_true', help='写入 TensorBoard 标量')
 
+    parser.add_argument('--experiment_engine', choices=('baseline', 'trusted_multi'), default='baseline')
+    parser.add_argument('--baseline_schedule_rounds', type=int, default=0,
+                        help='Baseline LR and phase horizon; 0 uses max_rounds, explicit 300 preserves its schedule during a longer run')
+    parser.add_argument('--trusted_weight_start', type=int, default=0,
+                        help='0 disables early weighting; 30 starts positive soft weighting at round31')
+    parser.add_argument('--trusted_weight_end', type=int, default=60)
+    parser.add_argument('--tm_main_rounds', type=int, default=300)
+    parser.add_argument('--tm_tail_rounds', type=int, default=0)
+    parser.add_argument('--tm_tail_lr', type=float, default=0.0001)
+    parser.add_argument('--tm_start', type=int, default=10)
+    parser.add_argument('--tm_ramp', type=int, default=50)
+    parser.add_argument('--tm_local_ema', type=float, default=0.99)
+    parser.add_argument('--tm_server_ema', type=float, default=0.8)
+    parser.add_argument('--tm_prototypes', type=int, default=3)
+    parser.add_argument('--tm_min_support', type=int, default=8)
+    parser.add_argument('--tm_geometry_mix', type=float, default=0.5)
+    parser.add_argument('--tm_feature_weight', type=float, default=0.2)
+    parser.add_argument('--tm_clip_factor', type=float, default=2.0)
+    parser.add_argument('--tm_distribution_align', type=float, default=0.0)
+
     yp = _yaml_path_from_argv(sys.argv).strip()
     if yp and os.path.isfile(yp):
         _apply_yaml_defaults(parser, yp)
@@ -260,6 +280,35 @@ def args_parser():
         raise FileNotFoundError(f'--config 指定的 YAML 不存在: {yp}')
 
     args = parser.parse_args()
+    if args.baseline_schedule_rounds < 0 or (args.max_rounds and args.baseline_schedule_rounds > args.max_rounds):
+        parser.error('baseline_schedule_rounds must be 0 or at most max_rounds')
+    if args.trusted_weight_start < 0 or (args.trusted_weight_start and not args.trusted_weight_start < args.trusted_weight_end):
+        parser.error('Require 0 <= trusted_weight_start < trusted_weight_end')
+    if args.trusted_weight_start and (args.experiment_engine != 'baseline' or args.pp_geom_mode != 'trusted'):
+        parser.error('Early trusted weighting requires the baseline engine and trusted geometry')
+    if args.baseline_schedule_rounds and args.experiment_engine != 'baseline':
+        parser.error('baseline_schedule_rounds is only for the baseline engine')
+    if args.experiment_engine == 'trusted_multi':
+        if args.dataset != 'CIFAR10' or args.alpha <= 0:
+            parser.error('trusted_multi currently supports CIFAR10 with alpha > 0 only')
+        if not (args.tm_main_rounds > args.tm_start >= 0 and args.tm_ramp > 0 and args.tm_tail_rounds >= 0):
+            parser.error('Invalid trusted_multi schedule')
+        if args.max_rounds not in (0, args.tm_main_rounds + args.tm_tail_rounds):
+            parser.error('max_rounds must equal tm_main_rounds + tm_tail_rounds; use the separate schedule fields')
+        if not (0 <= args.tm_local_ema < 1 and 0 <= args.tm_server_ema < 1):
+            parser.error('EMA rates must be in [0,1)')
+        if not (1 <= args.tm_prototypes <= 8 and args.tm_min_support >= 2):
+            parser.error('Require 1..8 prototypes and >=2 support examples per prototype')
+        if not (0 <= args.tm_geometry_mix <= 1 and 0 <= args.tm_distribution_align <= 1):
+            parser.error('Mixture coefficients must be in [0,1]')
+        if not (0 < args.tm_tail_lr <= args.lr_local_training and 0 <= args.tm_feature_weight < float('inf') and 0 < args.tm_clip_factor < float('inf')):
+            parser.error('Invalid trusted_multi loss, clipping or tail LR')
+        if not (0 < args.eta_B < args.tau_warmup < 1 and 0 < args.pp_proto_T < float('inf')):
+            parser.error('Require 0 < eta_B < tau_warmup < 1 and positive finite prototype temperature')
+        if not all(0 <= v < float('inf') for v in (args.lambda_A,args.lambda_B,args.lambda_proto)):
+            parser.error('Loss weights must be finite and nonnegative')
+        if not (2 <= args.num_clients and 1 <= args.num_online_clients <= args.num_clients and args.local_epochs > 0 and args.mu > 0 and args.batch_size_local_labeled_fixmatch > 0 and args.num_workers >= 0):
+            parser.error('Invalid client, batch, epoch or worker configuration')
     if args.pp_trust_min_count < 4:
         parser.error('pp_trust_min_count must be >= 4 for disjoint support/query splits')
     if args.pp_geom_mode == 'trusted' and (args.pp_teacher or args.pp_b_conf_rescue):

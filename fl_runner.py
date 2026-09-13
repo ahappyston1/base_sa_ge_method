@@ -42,7 +42,7 @@ import csv
 import time
 import json
 from trusted_geometry import refresh_reference, score_queries
-from training_dynamics import cosine_learning_rate, dynamics_row, lr_controls
+from training_dynamics import cosine_learning_rate, dynamics_row, lr_controls, schedule_rounds, trusted_weight_gate
 from update_diagnostics import update_rows
 from geometry_audit import accumulate as audit_accumulate, new_buffer as audit_buffer, append_rows as audit_append
 
@@ -306,6 +306,7 @@ def _write_run_config(path: str, args, extra: Dict[str, Any]) -> None:
         "dataset": args.dataset,
         "alpha": extra.get("alpha"),
         "num_rounds": int(args.num_rounds),
+        "schedule_rounds": schedule_rounds(args),
         "num_clients": int(args.num_clients),
         "num_online_clients": int(args.num_online_clients),
         "num_labeled_per_class": int(getattr(args, "num_labeled", 0)),
@@ -339,7 +340,7 @@ def _write_run_config(path: str, args, extra: Dict[str, Any]) -> None:
 
 def _geometry_controls(args) -> Dict[str, Any]:
     """Training controls persisted for reproducible server runs."""
-    return {
+    controls = {
         "mode": str(getattr(args, "pp_geom_mode", "legacy")),
         "trust_min_count": int(getattr(args, "pp_trust_min_count", 4)),
         "tau_ceiling": float(getattr(args, "pp_tau_ceiling", 0.99)),
@@ -347,6 +348,10 @@ def _geometry_controls(args) -> Dict[str, Any]:
         "b_conf_rescue": int(getattr(args, "pp_b_conf_rescue", 0)),
         "phase3_geom_boost": float(getattr(args, "pp_phase3_geom_boost", 0.0)),
     }
+    if getattr(args, 'trusted_weight_start', 0):
+        controls.update(trusted_weight_start=int(args.trusted_weight_start),
+                        trusted_weight_end=int(args.trusted_weight_end))
+    return controls
 
 
 def _class_thresholds(nr, tau0, delta0, a, b, boost, ceiling):
@@ -1119,7 +1124,7 @@ class LocalPPFPSL:
             self.teacher.eval()
 
         cosine_lr = cosine_learning_rate(
-            round_idx, args.lr_local_training, args.num_rounds,
+            round_idx, args.lr_local_training, schedule_rounds(args),
             float(getattr(args, "lr_min", 1e-4)),
             int(getattr(args, "lr_mid_start", 60)), int(getattr(args, "lr_mid_end", 90)),
             float(getattr(args, "lr_mid_factor", 1.0)),
@@ -1139,9 +1144,9 @@ class LocalPPFPSL:
             inited = True
 
         if sched is None:
-            phase = training_phase(round_idx, args.num_rounds, args)
-            g_gate = gate_anneal(round_idx, args.num_rounds, args)
-            aux_scale = warmup_aux_scale(round_idx, args.num_rounds, args)
+            phase = training_phase(round_idx, schedule_rounds(args), args)
+            g_gate = gate_anneal(round_idx, schedule_rounds(args), args)
+            aux_scale = warmup_aux_scale(round_idx, schedule_rounds(args), args)
             tau0_eff = float(args.tau0)
             delta0_eff = float(args.delta0)
             eta_B_eff = float(args.eta_B)
@@ -1264,9 +1269,13 @@ class LocalPPFPSL:
         it_u = iter(u_loader)
         trust_rows = []
         trusted_mode = getattr(args, "pp_geom_mode", "legacy") == "trusted" and phase >= 2
+        weight_gate = trusted_weight_gate(round_idx, g_gate, args)
+        early_weighting = (getattr(args, "pp_geom_mode", "legacy") == "trusted"
+                           and getattr(args, "trusted_weight_start", 0) > 0 and weight_gate > 0)
+        log_acc["trusted_weight_gate"] = weight_gate if (trusted_mode or early_weighting) else 0.0
         for _local_epoch in range(args.local_epochs):
             trusted_ref = None
-            if trusted_mode:
+            if trusted_mode or early_weighting:
                 trusted_ref = refresh_reference(
                     self.model, data_client_labeled, to_tensor_normalize(args.dataset),
                     args.num_classes, self.device, int(getattr(args, "pp_trust_min_count", 4)),
@@ -1343,8 +1352,22 @@ class LocalPPFPSL:
                     )
                     mask = in_A
                     w_A = mask.float()
+                    wb_phase1 = s_i
+                    if early_weighting:
+                        was_training = self.model.training
+                        self.model.eval()
+                        try:
+                            with torch.no_grad():
+                                zg, _ = self._forward_z_logits(uw)
+                        finally:
+                            self.model.train(was_training)
+                        early_tg = score_queries(zg, yhat, trusted_ref, weight_gate, _step / max(1, local_iter))
+                        w_A = w_A * early_tg["weight"]
+                        wb_phase1 = s_i * early_tg["weight"]
+                        log_acc["trust_authority_sum"] = log_acc.get("trust_authority_sum", 0.0) + float(early_tg["authority"].sum())
+                        log_acc["trust_valid_visits"] = log_acc.get("trust_valid_visits", 0) + int(early_tg["valid"].sum())
                     L_A, L_B = _unlabeled_ab_losses(
-                        logs, logw, yhat, in_A, in_B, w_A, s_i, args.T
+                        logs, logw, yhat, in_A, in_B, w_A, wb_phase1, args.T
                     )
                     log_acc["r_mean"] += float(s_i.mean().item())
                     log_acc["m_mean"] += 0.0
@@ -1409,7 +1432,7 @@ class LocalPPFPSL:
                                 zg, _ = self._forward_z_logits(uw)
                         finally:
                             self.model.train(was_training)
-                        tg = score_queries(zg, yhat, trusted_ref, g_gate, _step / max(1, local_iter))
+                        tg = score_queries(zg, yhat, trusted_ref, weight_gate, _step / max(1, local_iter))
                         in_A, in_B, in_C, pass_s = _route_phase1(
                             s_i, tau_warmup_eff, eta_B_eff, True, a_ratio_cap, b_ratio_cap,
                         )
@@ -1580,7 +1603,7 @@ class LocalPPFPSL:
                     # Read-only: GT never changes weights, routing, or losses.
                     with torch.no_grad():
                         wa_diag = w_A.detach() if phase == 1 else w_full.detach()
-                        wb_diag = (s_i if phase == 1 else b_score).detach() * in_B
+                        wb_diag = (wb_phase1 if phase == 1 else b_score).detach() * in_B
                         wa_diag = wa_diag * (args.lambda_A * lambda_A_scale)
                         wb_diag = wb_diag * (args.lambda_B * lambda_B_scale)
                         if phase == 1:
@@ -1680,6 +1703,7 @@ class LocalPPFPSL:
                 "use_a_for_proto",
                 "lambda_A_scale",
                 "lambda_B_scale",
+                "trusted_weight_gate",
             ):
                 log_final[k] = v
             elif isinstance(v, torch.Tensor):
@@ -1872,6 +1896,8 @@ def fixmatch(alpha):
 
     if getattr(args, 'max_rounds', 0) and args.max_rounds > 0:
         args.num_rounds = args.max_rounds
+    if schedule_rounds(args) > args.num_rounds:
+        raise ValueError('The baseline schedule horizon cannot exceed the total training rounds')
 
     _hp = (
         f"[HParams] METHOD_REV={METHOD_REV} adaptive={int(getattr(args,'pp_adaptive',1))} "
@@ -2004,14 +2030,14 @@ def fixmatch(alpha):
     ckpt_path = paths["ckpt_path"]
     load_ckpt = paths["resume_src"] or ckpt_path
 
-    schedule = AdaptiveSchedule(args, args.num_rounds)
+    schedule = AdaptiveSchedule(args, schedule_rounds(args))
     sched_msg = (
         f"[Schedule] adaptive={int(schedule.enabled)} "
         f"warmup=[{getattr(args, 'pp_warmup_min_ratio', 0.15):.2f},{getattr(args, 'pp_warmup_max_ratio', 0.40):.2f}] "
         f"geom=[{getattr(args, 'pp_geom_min_ratio', 0.12):.2f},{getattr(args, 'pp_geom_max_ratio', 0.35):.2f}] "
         f"capA={getattr(args, 'pp_a_ratio_cap_p1', 0):.2f}/{getattr(args, 'pp_a_ratio_cap', 0):.2f} "
         f"protoWrite=floor{getattr(args, 'proto_conf_floor', 0):.2f}/extra{getattr(args, 'proto_w_extra', 0):.2f} "
-        f"geom_rel=Phase2 gate 0→1 over {max(1, int(round(getattr(args, 'pp_gate_anneal_ratio', 0.15) * args.num_rounds)))} rounds "
+        f"geom_rel=Phase2 gate 0→1 over {max(1, int(round(getattr(args, 'pp_gate_anneal_ratio', 0.15) * schedule_rounds(args))))} rounds "
         f"target A-prec={getattr(args, 'pp_target_a_prec', 0.90)} A-ratio={getattr(args, 'pp_target_a_ratio', 0.22)}"
     )
     print(sched_msg)
@@ -2020,7 +2046,7 @@ def fixmatch(alpha):
     fedavg_acc = []
     start_round = 1
     if os.path.isfile(load_ckpt):
-        ckpt = torch.load(load_ckpt, map_location='cpu')
+        ckpt = torch.load(load_ckpt, map_location='cpu', weights_only=False)
         if ckpt.get('method_rev') != METHOD_REV:
             if paths["resume_src"]:
                 raise ValueError('Checkpoint METHOD_REV differs; start a fresh run without --resume')
@@ -2042,6 +2068,10 @@ def fixmatch(alpha):
             start_round = ckpt['round'] + 1
             random_state.set_state(ckpt['np_random_state'])
             torch.set_rng_state(ckpt['torch_rng_state'])
+            if 'python_rng_state' in ckpt:
+                random.setstate(ckpt['python_rng_state'])
+            if 'numpy_global_rng_state' in ckpt:
+                np.random.set_state(ckpt['numpy_global_rng_state'])
             if torch.cuda.is_available():
                 torch.cuda.set_rng_state(ckpt['cuda_rng_state'])
             if ckpt.get('schedule') is not None:
@@ -2254,7 +2284,7 @@ def fixmatch(alpha):
             tb_writer.flush()
 
         # 每轮保存 checkpoint（覆盖同一个文件，断电/中断可续训）
-        torch.save({
+        checkpoint_state = {
             'round': r,
             'global_model': global_model.model.state_dict(),
             'p_ref': global_model.p_ref.cpu(),
@@ -2263,13 +2293,18 @@ def fixmatch(alpha):
             'fedavg_acc': fedavg_acc,
             'np_random_state': random_state.get_state(),
             'torch_rng_state': torch.get_rng_state(),
+            'python_rng_state': random.getstate(),
+            'numpy_global_rng_state': np.random.get_state(),
             'cuda_rng_state': torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
             'schedule': schedule.state_dict(),
             'method_rev': METHOD_REV,
             'geometry_controls': _geometry_controls(args),
             'lr_controls': lr_controls(args),
             'run_id': paths["run_id"],
-        }, ckpt_path)
+        }
+        torch.save(checkpoint_state, ckpt_path)
+        if args.num_rounds > schedule_rounds(args) and r == schedule_rounds(args):
+            torch.save(checkpoint_state, os.path.join(paths['run_dir'], 'main_end.pt'))
 
         acc_df = pd.DataFrame({
             'round': list(range(1, len(fedavg_acc) + 1)),

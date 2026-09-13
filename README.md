@@ -1,5 +1,9 @@
 # SAGE
 
+新增实验：[REV14 可信多原型与教师训练说明](docs/trusted_multi.md)。
+三组后续实验：[原trusted延长到500轮、提前软降权与REV14启动说明](docs/trusted_followups.md)。
+启动：`bash scripts/run_experiment.sh trusted_multi_tail 0 7`（300轮主训练＋75轮独立收尾）。
+
 <div align="center">
 
 <!-- Center-No-Ver-Bar-H1-H2 for GitHub, fork from https://gist.github.com/CodeByAidan/bb43bdb1c07c0933d8b67c23515fb912 -->

@@ -2,6 +2,7 @@
 data/
 *.tar.gz
 .venv/
+.venv-tm/
 venv/
 __pycache__/
 *.py[cod]
