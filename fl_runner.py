@@ -42,8 +42,12 @@ import csv
 import time
 import json
 from trusted_geometry import refresh_reference, score_queries
+from exploration import (initialize_heads, ema as bc_ema_update, teacher_objectives,
+                         ramp as exploration_ramp, prox_coefficient, proximal_loss)
+from trusted_risk import (score_a as score_a_risk, audit as audit_a_risk, GROUPS as RISK_GROUPS,
+                          new_audit as new_risk_audit, audit_rows as risk_audit_rows)
 from training_dynamics import cosine_learning_rate, dynamics_row, lr_controls, schedule_rounds, trusted_weight_gate
-from update_diagnostics import update_rows
+from update_diagnostics import update_rows, save_update_snapshot
 from geometry_audit import accumulate as audit_accumulate, new_buffer as audit_buffer, append_rows as audit_append
 
 worker_num = 4
@@ -331,6 +335,8 @@ def _write_run_config(path: str, args, extra: Dict[str, Any]) -> None:
         "eta_B": float(args.eta_B),
         "run_id": extra.get("run_id"),
     }
+    if getattr(args, 'diagnostic_update_rounds', ''):
+        cfg['diagnostic_update_rounds'] = args.diagnostic_update_rounds
     with open(path, "w", encoding="utf8") as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
         f.write("\n")
@@ -351,6 +357,16 @@ def _geometry_controls(args) -> Dict[str, Any]:
     if getattr(args, 'trusted_weight_start', 0):
         controls.update(trusted_weight_start=int(args.trusted_weight_start),
                         trusted_weight_end=int(args.trusted_weight_end))
+    if getattr(args, 'trusted_a_risk', 0):
+        controls.update(trusted_a_risk=1, risk_version=1,
+                        risk_distance_cap=args.risk_distance_cap,
+                        risk_conflict_cap=args.risk_conflict_cap,
+                        risk_prior_count=args.risk_prior_count)
+    if getattr(args, 'bc_teacher', 0):
+        controls.update(bc_teacher=1, bc_version=1, bc_ema=args.bc_ema,
+                        bc_feature_weight=args.bc_feature_weight, bc_ramp=[30,90])
+    if getattr(args, 'mid_prox_mu', 0):
+        controls.update(mid_prox_mu=args.mid_prox_mu, prox_version=1, prox_schedule=[30,60,200,250])
     return controls
 
 
@@ -1118,6 +1134,22 @@ class LocalPPFPSL:
         self.model.load_state_dict(global_params)
         self.optimizer.state.clear()
         self.model.train()
+        bc_enabled = bool(getattr(args, 'bc_teacher', 0))
+        bc_gate = exploration_ramp(round_idx,30,90) if bc_enabled else 0.
+        prox_mu = prox_coefficient(round_idx,args) if getattr(args,'mid_prox_mu',0) else 0.
+        anchor = {n:p.detach().clone() for n,p in self.model.named_parameters()} if prox_mu else None
+        if bc_enabled:
+            if not hasattr(self,'bc_heads'):
+                self.bc_heads=initialize_heads(self.dim,self.device)
+                self.bc_initial=copy.deepcopy(self.bc_heads.state_dict())
+                self.optimizer.add_param_group({'params':self.bc_heads.parameters()})
+            self.bc_heads.load_state_dict((client_state or {}).get('bc_heads',self.bc_initial))
+            self.bc_heads.train()
+            self.bc_target=copy.deepcopy(self.bc_heads.projector).eval()
+            for p in self.bc_target.parameters():p.requires_grad_(False)
+            self.teacher.load_state_dict(global_params)
+            self.teacher.eval()
+            for p in self.teacher.parameters():p.requires_grad_(False)
         use_teacher = bool(int(getattr(args, "pp_teacher", 0)))
         if use_teacher:
             self.teacher.load_state_dict(global_params)
@@ -1268,6 +1300,9 @@ class LocalPPFPSL:
         it_l = iter(lab_loader)
         it_u = iter(u_loader)
         trust_rows = []
+        risk_enabled = bool(getattr(args, 'trusted_a_risk', 0))
+        risk_buffer = new_risk_audit(args.num_classes, self.device) if risk_enabled else None
+        risk_calibration_rows = []
         trusted_mode = getattr(args, "pp_geom_mode", "legacy") == "trusted" and phase >= 2
         weight_gate = trusted_weight_gate(round_idx, g_gate, args)
         early_weighting = (getattr(args, "pp_geom_mode", "legacy") == "trusted"
@@ -1279,7 +1314,19 @@ class LocalPPFPSL:
                 trusted_ref = refresh_reference(
                     self.model, data_client_labeled, to_tensor_normalize(args.dataset),
                     args.num_classes, self.device, int(getattr(args, "pp_trust_min_count", 4)),
+                    **(dict(risk_threshold=tau_warmup_eff, risk_temperature=args.T) if risk_enabled else {}),
                 )
+                if risk_enabled:
+                    cal = trusted_ref['risk_calibration']
+                    cal_counts = cal['count'].cpu().tolist()
+                    cal_errors = cal['errors'].cpu().tolist()
+                    for cls in range(args.num_classes):
+                        for band in range(2):
+                            for group, group_name in enumerate(RISK_GROUPS):
+                                risk_calibration_rows.append(dict(epoch=_local_epoch+1, cls=cls,
+                                    confidence_band=band, geometry_group=group_name,
+                                    query_count=cal_counts[cls][band][group],
+                                    query_errors=cal_errors[cls][band][group]))
                 if int(getattr(args, "diag_geom", 1)):
                     for cls in range(args.num_classes):
                         trust_rows.append(dict(epoch=_local_epoch + 1, cls=cls,
@@ -1331,7 +1378,7 @@ class LocalPPFPSL:
                 else:
                     L_proto = z_x.new_zeros(())
 
-                _, logs = self._forward_z_logits(us)
+                zs, logs = self._forward_z_logits(us)
                 if use_teacher:
                     with torch.no_grad():
                         zw, logw = self._forward_z_logits(uw, self.teacher)
@@ -1358,11 +1405,17 @@ class LocalPPFPSL:
                         self.model.eval()
                         try:
                             with torch.no_grad():
-                                zg, _ = self._forward_z_logits(uw)
+                                zg, geometry_logits = self._forward_z_logits(uw)
                         finally:
                             self.model.train(was_training)
                         early_tg = score_queries(zg, yhat, trusted_ref, weight_gate, _step / max(1, local_iter))
                         w_A = w_A * early_tg["weight"]
+                        if risk_enabled:
+                            risk = score_a_risk(zg, yhat, geometry_logits, trusted_ref, weight_gate,
+                                _step / max(1, local_iter), args.risk_distance_cap,
+                                args.risk_conflict_cap, args.risk_prior_count, args.T)
+                            audit_a_risk(risk_buffer, risk, in_A, yhat, y_u_gt, early_tg['weight'])
+                            w_A = in_A.float() * risk['weight']
                         wb_phase1 = s_i * early_tg["weight"]
                         log_acc["trust_authority_sum"] = log_acc.get("trust_authority_sum", 0.0) + float(early_tg["authority"].sum())
                         log_acc["trust_valid_visits"] = log_acc.get("trust_valid_visits", 0) + int(early_tg["valid"].sum())
@@ -1429,7 +1482,7 @@ class LocalPPFPSL:
                         self.model.eval()
                         try:
                             with torch.no_grad():
-                                zg, _ = self._forward_z_logits(uw)
+                                zg, geometry_logits = self._forward_z_logits(uw)
                         finally:
                             self.model.train(was_training)
                         tg = score_queries(zg, yhat, trusted_ref, weight_gate, _step / max(1, local_iter))
@@ -1527,6 +1580,12 @@ class LocalPPFPSL:
 
                     if trusted_mode:
                         w_full = in_A.float() * tg["weight"]
+                        if risk_enabled:
+                            risk = score_a_risk(zg, yhat, geometry_logits, trusted_ref, weight_gate,
+                                _step / max(1, local_iter), args.risk_distance_cap,
+                                args.risk_conflict_cap, args.risk_prior_count, args.T)
+                            audit_a_risk(risk_buffer, risk, in_A, yhat, y_u_gt, tg['weight'])
+                            w_full = in_A.float() * risk['weight']
                     else:
                         w_geom = (s_i ** args.w_gamma * m_tilde).clamp(args.w_min, 1.0)
                         w_full = torch.zeros_like(s_i)
@@ -1615,9 +1674,35 @@ class LocalPPFPSL:
                                 key = "dyn_" + bucket + "_" + suffix
                                 log_acc[key] = log_acc.get(key, 0.0) + float(value.item())
 
+                if bc_enabled:
+                    teacher_b = L_B
+                    feature_effective = logs.new_zeros(())
+                    if bc_gate > 0:
+                        with torch.no_grad():
+                            zt, lt = self._forward_z_logits(uw,self.teacher)
+                        bw = wb_phase1 if phase == 1 else b_score
+                        teacher_b, feature = teacher_objectives(zs,logs,zt,lt,self.bc_heads,
+                            self.bc_target,in_B,in_C,bw,args.T)
+                        old_b = L_B
+                        L_B = (1-bc_gate)*old_b + bc_gate*teacher_b
+                        bcoef = args.lambda_B*lambda_B_scale*(aux_scale if phase==1 else 1.)
+                        feature_effective = bc_gate*args.bc_feature_weight*feature
+                        loss = loss + bcoef*(L_B-old_b) + feature_effective
+                        # Diagnostic GT is only consumed after targets and loss are computed.
+                        log_acc['bc_teacher_b_correct'] = log_acc.get('bc_teacher_b_correct',0.) + float(((lt.argmax(-1)==y_u_gt)&in_B).sum())
+                        log_acc['bc_teacher_b_total'] = log_acc.get('bc_teacher_b_total',0.) + float(in_B.sum())
+                        log_acc['bc_feature_std'] = log_acc.get('bc_feature_std',0.) + float(zs.detach().std(dim=0,unbiased=False).mean())
+                    log_acc['L_feature_effective'] = log_acc.get('L_feature_effective',0.) + float(feature_effective.detach())
+                if getattr(args,'mid_prox_mu',0):
+                    prox = proximal_loss(self.model,anchor,prox_mu) if prox_mu else logs.new_zeros(())
+                    loss = loss + prox
+                    log_acc['L_prox_effective'] = log_acc.get('L_prox_effective',0.) + float(prox.detach())
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 self.optimizer.step()
+                if bc_enabled:
+                    bc_ema_update(self.teacher,self.model,args.bc_ema)
+                    bc_ema_update(self.bc_target,self.bc_heads.projector,args.bc_ema)
 
                 log_acc["loss"] += float(loss.detach().item())
                 log_acc["L_sup"] += float(L_sup.detach().item())
@@ -1688,7 +1773,7 @@ class LocalPPFPSL:
 
         log_final = {}
         for k, v in log_acc.items():
-            if k in ("loss", "L_sup", "L_A", "L_B", "L_proto", "r_mean", "m_mean", "alpha_t"):
+            if k in ("loss", "L_sup", "L_A", "L_B", "L_proto", "r_mean", "m_mean", "alpha_t", "L_feature_effective", "L_prox_effective", "bc_feature_std"):
                 log_final[k] = v / max(1, log_acc["n_batches"])
             elif k in (
                 "lr",
@@ -1728,6 +1813,8 @@ class LocalPPFPSL:
             "log": log_final,
             "geometry_audit": audit_counts.cpu().tolist() if audit_counts is not None else None,
             "trust_rows": trust_rows,
+            "risk_rows": risk_audit_rows(risk_buffer) if risk_buffer is not None else [],
+            "risk_calibration_rows": risk_calibration_rows,
         }
 
         proto_upload = {
@@ -1735,6 +1822,8 @@ class LocalPPFPSL:
             "w_agg": w_agg.detach(),
             "loc_valid": loc_new.detach(),
         }
+        if bc_enabled:
+            new_state['bc_heads'] = {k:v.detach().cpu().clone() for k,v in self.bc_heads.state_dict().items()}
 
         return copy.deepcopy(self.model.state_dict()), new_state, proto_upload
 
@@ -2111,6 +2200,18 @@ def fixmatch(alpha):
                 snap,
             )
             trust_rows = st_new.pop("trust_rows", [])
+            for state_key, filename in [('risk_rows', 'risk_audit.csv'),
+                                        ('risk_calibration_rows', 'risk_calibration.csv')]:
+                risk_rows = st_new.pop(state_key, [])
+                if risk_rows:
+                    risk_path = os.path.join(os.path.dirname(paths['trust_reference_path']), filename)
+                    new_file = not os.path.exists(risk_path)
+                    records = [dict(round=r, client=int(client), **row) for row in risk_rows]
+                    with open(risk_path, 'a', newline='', encoding='utf-8') as f:
+                        writer = csv.DictWriter(f, fieldnames=list(records[0]))
+                        if new_file:
+                            writer.writeheader()
+                        writer.writerows(records)
             if trust_rows:
                 trust_path = paths["trust_reference_path"]
                 new_file = not os.path.exists(trust_path)
@@ -2129,6 +2230,10 @@ def fixmatch(alpha):
             log_rows.append(st_new.get('log', {}))
 
         fedavg_params = global_model.initialize_for_model_fusion(list_dicts_local_params, list_nums_local_data)
+        if str(r) in getattr(args, 'diagnostic_update_rounds', '').split(','):
+            save_update_snapshot(os.path.join(paths['run_dir'], 'update_snapshots', f'round_{r:04d}.pt'),
+                r, dict_global_params, list_dicts_local_params, fedavg_params, online_clients,
+                list_nums_local_data, [name for name, _ in global_model.model.named_parameters()])
 
         # Capture before fedavg_eval loads new weights into global_state's owner.
         update_summary, update_clients = {}, []

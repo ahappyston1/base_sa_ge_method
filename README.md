@@ -61,6 +61,10 @@ Before running, please ensure the dataset paths are correctly set in `options.py
 
 ### Usage
 
+三条独立探索（risk、教师 B/C、中期参数约束）及两块空闲 GPU 排队、等待旧任务退出后使用第三块 GPU 的命令见 [docs/exploration_experiments.md](docs/exploration_experiments.md)。
+
+A 组风险权重实验（`trusted_lr015_risk`）的设计边界、诊断文件和服务器启动命令见 [docs/trusted_risk.md](docs/trusted_risk.md)。
+
 最新三组后续实验（trusted + 0.15 / legacy + 0.15 × 500轮 / legacy + 0.20）
 的服务器命令、调度说明与验证步骤见 [docs/three_experiments.md](docs/three_experiments.md)。
 

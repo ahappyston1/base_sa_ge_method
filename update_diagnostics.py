@@ -67,3 +67,17 @@ def update_rows(global_state, local_states, fused_state, sample_counts,
             row[group + "_distance_to_fused"] = math.sqrt(vs[i])
             row[group + "_cos_to_fused"] = ratio(ds[i], local_norms[i] * global_norm)
     return summary, clients
+def save_update_snapshot(path, round_idx, before, clients, fused, client_ids, counts, parameter_names):
+    """Read-only CPU copies; no model loads, evaluations or random draws."""
+    import os
+    import torch
+    def cpu_copy(state):
+        return {k: v.detach().cpu().clone() for k, v in state.items()}
+    payload = dict(round=int(round_idx), before=cpu_copy(before),
+                   clients=[cpu_copy(s) for s in clients], fused=cpu_copy(fused),
+                   client_ids=[int(c) for c in client_ids], data_counts=[int(n) for n in counts],
+                   parameter_names=list(parameter_names))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temporary = str(path) + '.tmp'
+    torch.save(payload, temporary)
+    os.replace(temporary, path)

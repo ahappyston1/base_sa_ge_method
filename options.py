@@ -9,6 +9,7 @@ YAML：可用 `--config path/to.yaml` 批量设参；合并顺序为「先读 YA
 故命令行显式传入的项会覆盖 YAML。需安装 PyYAML（见 requirements.txt）。
 """
 import argparse
+import math
 import os
 import sys
 
@@ -259,6 +260,16 @@ def args_parser():
     parser.add_argument('--trusted_weight_start', type=int, default=0,
                         help='0 disables early weighting; 30 starts positive soft weighting at round31')
     parser.add_argument('--trusted_weight_end', type=int, default=60)
+    parser.add_argument('--trusted_a_risk', type=int, choices=(0, 1), default=0)
+    parser.add_argument('--bc_teacher', type=int, choices=(0,1), default=0)
+    parser.add_argument('--bc_ema', type=float, default=.99)
+    parser.add_argument('--bc_feature_weight', type=float, default=.10)
+    parser.add_argument('--mid_prox_mu', type=float, default=0.)
+    parser.add_argument('--risk_distance_cap', type=float, default=.15)
+    parser.add_argument('--risk_conflict_cap', type=float, default=.60)
+    parser.add_argument('--risk_prior_count', type=float, default=8.)
+    parser.add_argument('--diagnostic_update_rounds', type=str, default='',
+                        help='Comma-separated rounds to save pre/local/fused model states for offline diagnosis')
     parser.add_argument('--tm_main_rounds', type=int, default=300)
     parser.add_argument('--tm_tail_rounds', type=int, default=0)
     parser.add_argument('--tm_tail_lr', type=float, default=0.0001)
@@ -280,6 +291,27 @@ def args_parser():
         raise FileNotFoundError(f'--config 指定的 YAML 不存在: {yp}')
 
     args = parser.parse_args()
+    if args.bc_teacher or args.mid_prox_mu:
+        if args.experiment_engine != 'baseline' or args.pp_geom_mode != 'trusted' or args.pp_teacher:
+            parser.error('Exploration requires baseline trusted with pp_teacher=0 (A remains student-routed)')
+        if args.trusted_a_risk or (args.bc_teacher and args.mid_prox_mu):
+            parser.error('Run risk, BC teacher, and proximal directions independently first')
+    if not (0 <= args.bc_ema < 1 and math.isfinite(args.bc_feature_weight) and args.bc_feature_weight >= 0
+            and math.isfinite(args.mid_prox_mu) and args.mid_prox_mu >= 0):
+        parser.error('Invalid teacher or proximal controls')
+    try:
+        diagnostic_rounds = [int(x.strip()) for x in args.diagnostic_update_rounds.split(',') if x.strip()]
+    except ValueError:
+        parser.error('diagnostic_update_rounds must contain comma-separated positive integers')
+    if any(r <= 0 or (args.max_rounds and r > args.max_rounds) for r in diagnostic_rounds):
+        parser.error('diagnostic_update_rounds must lie within the experiment')
+    args.diagnostic_update_rounds = ','.join(str(r) for r in sorted(set(diagnostic_rounds)))
+    if args.trusted_a_risk:
+        if args.experiment_engine != 'baseline' or args.pp_geom_mode != 'trusted':
+            parser.error('trusted_a_risk requires baseline engine with trusted geometry')
+        if not (0 <= args.risk_distance_cap <= args.risk_conflict_cap <= 1
+                and math.isfinite(args.risk_prior_count) and args.risk_prior_count > 0):
+            parser.error('Require 0 <= distance cap <= conflict cap <= 1 and positive risk_prior_count')
     if args.baseline_schedule_rounds < 0 or (args.max_rounds and args.baseline_schedule_rounds > args.max_rounds):
         parser.error('baseline_schedule_rounds must be 0 or at most max_rounds')
     if args.trusted_weight_start < 0 or (args.trusted_weight_start and not args.trusted_weight_start < args.trusted_weight_end):

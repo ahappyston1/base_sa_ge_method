@@ -1,0 +1,149 @@
+{
+  "snapshot": "2026-09-14",
+  "runs": {
+    "trusted_lr015": {
+      "source": "results\\CIFAR10\\runs\\rev13_trusted_lr015_s7_20260912_232108_1369156_a0.1",
+      "rounds": 300,
+      "best": 0.8583,
+      "best_round": 296,
+      "final": 0.8564,
+      "last30": 0.85507
+    },
+    "high_lr": {
+      "source": "results\\CIFAR10\\runs\\rev13_high_lr_s7_20260912_003221_3951932_a0.1",
+      "rounds": 300,
+      "best": 0.8531,
+      "best_round": 297,
+      "final": 0.8507,
+      "last30": 0.84852
+    },
+    "legacy_lr015_500": {
+      "source": "results\\CIFAR10\\runs\\rev13_legacy_lr015_500_s7_20260912_232116_1369405_a0.1",
+      "rounds": 500,
+      "best": 0.8653,
+      "best_round": 491,
+      "final": 0.865,
+      "last30": 0.86263
+    }
+  },
+  "classes": {
+    "136-200": {
+      "0": {
+        "precision": 0.8709635213652476,
+        "wrong_weight_share": 0.07199962762199799,
+        "wrong_mean_weight": 0.7814428267547397
+      },
+      "1": {
+        "precision": 0.7620993412420645,
+        "wrong_weight_share": 0.12392169137289688,
+        "wrong_mean_weight": 0.7017406517610909
+      },
+      "2": {
+        "precision": 0.7748348877339304,
+        "wrong_weight_share": 0.10706589272552298,
+        "wrong_mean_weight": 0.7841809592674135
+      },
+      "3": {
+        "precision": 0.7000129355457037,
+        "wrong_weight_share": 0.14527532461255246,
+        "wrong_mean_weight": 0.8127683214601508
+      },
+      "4": {
+        "precision": 0.7770753284145295,
+        "wrong_weight_share": 0.12115193659944404,
+        "wrong_mean_weight": 0.801387498017292
+      },
+      "5": {
+        "precision": 0.7079146959048495,
+        "wrong_weight_share": 0.13478302971698627,
+        "wrong_mean_weight": 0.7395115923251442
+      },
+      "6": {
+        "precision": 0.7424828409281005,
+        "wrong_weight_share": 0.10794485437254635,
+        "wrong_mean_weight": 0.6721600611660747
+      },
+      "7": {
+        "precision": 0.8805081134822285,
+        "wrong_weight_share": 0.0571374887837863,
+        "wrong_mean_weight": 0.6815248870776991
+      },
+      "8": {
+        "precision": 0.9096467354072424,
+        "wrong_weight_share": 0.04311939280859621,
+        "wrong_mean_weight": 0.6719082133088351
+      },
+      "9": {
+        "precision": 0.8256926549177634,
+        "wrong_weight_share": 0.08760076138567052,
+        "wrong_mean_weight": 0.6977735346685152
+      }
+    },
+    "271-300": {
+      "0": {
+        "precision": 0.9353521720414679,
+        "wrong_weight_share": 0.10909698322526173,
+        "wrong_mean_weight": 0.7973855162320072
+      },
+      "1": {
+        "precision": 0.9736613994930234,
+        "wrong_weight_share": 0.04372450549859714,
+        "wrong_mean_weight": 0.7169616995113403
+      },
+      "2": {
+        "precision": 0.9181419336052883,
+        "wrong_weight_share": 0.10421634027349054,
+        "wrong_mean_weight": 0.7512397637595417
+      },
+      "3": {
+        "precision": 0.8607611903887449,
+        "wrong_weight_share": 0.1960498923337784,
+        "wrong_mean_weight": 0.7955153818037676
+      },
+      "4": {
+        "precision": 0.9360933481441452,
+        "wrong_weight_share": 0.09887764108349416,
+        "wrong_mean_weight": 0.8158019676202523
+      },
+      "5": {
+        "precision": 0.8924781103644879,
+        "wrong_weight_share": 0.1428201378887212,
+        "wrong_mean_weight": 0.7600408225662374
+      },
+      "6": {
+        "precision": 0.8970263126866845,
+        "wrong_weight_share": 0.1340552871983089,
+        "wrong_mean_weight": 0.6739502993223989
+      },
+      "7": {
+        "precision": 0.959063091497466,
+        "wrong_weight_share": 0.06353168242520509,
+        "wrong_mean_weight": 0.7681016466311491
+      },
+      "8": {
+        "precision": 0.9703189157482016,
+        "wrong_weight_share": 0.05458389201311301,
+        "wrong_mean_weight": 0.7977093441270937
+      },
+      "9": {
+        "precision": 0.9685483517839585,
+        "wrong_weight_share": 0.05304363806002983,
+        "wrong_mean_weight": 0.7074517131440172
+      }
+    }
+  },
+  "references": {
+    "changing_support_keys": 0,
+    "136-200": {
+      "valid_reference_mean_trust": 0.7846486072199382
+    },
+    "271-300": {
+      "valid_reference_mean_trust": 0.7921414048670187
+    }
+  },
+  "age_decay": {
+    "epoch_steps": 19,
+    "last_multiplier": 0.38776010329632493,
+    "mean_multiplier": 0.648901222513561
+  }
+}

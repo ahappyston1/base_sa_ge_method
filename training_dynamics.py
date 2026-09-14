@@ -83,6 +83,14 @@ def dynamics_row(round_idx, phase, logs, args):
             weighted += float(x[key]) * float(x["n_batches"]) * coef * scale
         row[key + "_effective"] = weighted / max(steps, 1)
     row["loss_reconstructed"] = sum(row[k + "_effective"] for k in ("L_sup", "L_A", "L_B", "L_proto"))
+    for flag,key in [('bc_teacher','L_feature_effective'),('mid_prox_mu','L_prox_effective')]:
+        if getattr(args,flag,0):
+            row[key] = sum(float(x.get(key,0))*float(x['n_batches']) for x in logs)/max(steps,1)
+            row['loss_reconstructed'] += row[key]
+    if getattr(args,'bc_teacher',0):
+        row['teacher_b_visits'] = int(total('bc_teacher_b_total'))
+        row['teacher_b_precision'] = total('bc_teacher_b_correct')/max(total('bc_teacher_b_total'),1)
+        row['bc_feature_std'] = sum(float(x.get('bc_feature_std',0))*float(x['n_batches']) for x in logs)/max(steps,1)
     row["loss_observed"] = sum(float(x["loss"]) * float(x["n_batches"]) for x in logs) / max(steps, 1)
     row["u_visits"] = int(n)
     row["local_steps"] = int(steps)
