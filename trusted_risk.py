@@ -48,7 +48,7 @@ def evidence(z, yhat, ref):
 
 
 @torch.no_grad()
-def fit_calibration(z, logits, y, ref, threshold=.95, temperature=1.):
+def fit_calibration(z, logits, y, ref, threshold=.95, temperature=1., pair_specific=False):
     # Identical stable per-class alternating support/query split to fit_reference.
     query = torch.zeros_like(y, dtype=torch.bool)
     for cls in range(len(ref['valid'])):
@@ -63,17 +63,22 @@ def fit_calibration(z, logits, y, ref, threshold=.95, temperature=1.):
     key = pred[selected]*8 + band[selected]*4 + group[selected]
     count.view(-1).index_add_(0, key, torch.ones_like(confidence[selected]))
     errors.view(-1).index_add_(0, key, (pred[selected] != y[selected]).to(z.dtype))
-    return dict(count=count, errors=errors, threshold=float(threshold))
+    result=dict(count=count, errors=errors, threshold=float(threshold))
+    if pair_specific:
+        from pair_risk import fit
+        result['pairs']=fit(z,pred,y,confidence,selected,group,ref)
+    return result
 
 
 @torch.no_grad()
 def score_a(z, yhat, eval_logits, ref, gate, age_fraction=0.,
-            distance_cap=.15, conflict_cap=.60, prior_count=8., temperature=1.):
+            distance_cap=.15, conflict_cap=.60, prior_count=8., temperature=1.,
+            class_specific=False):
     group, severity, trust = evidence(z, yhat, ref)
+    cal = ref['risk_calibration']
     cap = torch.where(group == 2, severity.new_full(severity.shape, conflict_cap),
                       severity.new_full(severity.shape, distance_cap))
     prior = severity*cap
-    cal = ref['risk_calibration']
     # Match the eval-mode calibration. Train-mode pseudo-labels can disagree;
     # those cases get geometric fallback, not calibration for another label.
     conf, eval_pred = F.softmax(eval_logits/temperature, dim=-1).max(1)
@@ -90,9 +95,15 @@ def score_a(z, yhat, eval_logits, ref, gate, age_fraction=0.,
     penalty = torch.minimum(penalty, cap)
     active = (group == 1) | (group == 2)
     authority = float(gate)*math.exp(-max(0., age_fraction))*trust
+    base_weight = 1-authority*penalty*active.float()
+    pair = None
+    if class_specific:
+        from pair_risk import adjust
+        pair=adjust(z,yhat,ref,band,group,usable,penalty)
+        penalty=pair['penalty']
     weight = 1-authority*penalty*active.float()
     return dict(weight=weight, group=group, calibration_n=torch.where(usable, n+pool_n, torch.zeros_like(n)),
-                penalty=penalty*active.float())
+                penalty=penalty*active.float(), base_weight=base_weight, pair=pair)
 
 
 @torch.no_grad()

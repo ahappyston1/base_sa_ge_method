@@ -90,7 +90,7 @@ def score_queries(z, yhat, reference, gate, age_fraction=0.0):
 
 @torch.no_grad()
 def refresh_reference(model, dataset, transform, num_classes, device, min_count=4, batch_size=128,
-                      risk_threshold=None, risk_temperature=1.):
+                      risk_threshold=None, risk_temperature=1., pair_specific=False):
     """Fresh eval features; deterministic transforms, no DataLoader/RNG consumption.
 
     Split by stable dataset ID within each class. Held-out here means excluded
@@ -120,5 +120,5 @@ def refresh_reference(model, dataset, transform, num_classes, device, min_count=
     ref = fit_reference(z, y, num_classes, min_count)
     if risk_threshold is not None:
         from trusted_risk import fit_calibration
-        ref['risk_calibration'] = fit_calibration(z, torch.cat(logits), y, ref, risk_threshold, risk_temperature)
+        ref['risk_calibration'] = fit_calibration(z, torch.cat(logits), y, ref, risk_threshold, risk_temperature, pair_specific)
     return ref

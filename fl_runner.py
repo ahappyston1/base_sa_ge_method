@@ -42,6 +42,7 @@ import csv
 import time
 import json
 from trusted_geometry import refresh_reference, score_queries
+import pair_risk
 from exploration import (initialize_heads, ema as bc_ema_update, teacher_objectives,
                          ramp as exploration_ramp, prox_coefficient, proximal_loss)
 from trusted_risk import (score_a as score_a_risk, audit as audit_a_risk, GROUPS as RISK_GROUPS,
@@ -357,11 +358,16 @@ def _geometry_controls(args) -> Dict[str, Any]:
     if getattr(args, 'trusted_weight_start', 0):
         controls.update(trusted_weight_start=int(args.trusted_weight_start),
                         trusted_weight_end=int(args.trusted_weight_end))
-    if getattr(args, 'trusted_a_risk', 0):
+    if getattr(args, 'trusted_a_risk', 0) or getattr(args, 'trusted_class_risk', 0):
         controls.update(trusted_a_risk=1, risk_version=1,
                         risk_distance_cap=args.risk_distance_cap,
                         risk_conflict_cap=args.risk_conflict_cap,
                         risk_prior_count=args.risk_prior_count)
+        if getattr(args, 'trusted_class_risk', 0):
+            controls.update(trusted_class_risk=1, class_risk_version=2,
+                            pair_min_count=pair_risk.MIN_PAIR, pair_min_rest=pair_risk.MIN_REST,
+                            pair_max_adjustment=pair_risk.MAX_ADJUSTMENT,
+                            pair_max_penalty=pair_risk.MAX_PENALTY)
     if getattr(args, 'bc_teacher', 0):
         controls.update(bc_teacher=1, bc_version=1, bc_ema=args.bc_ema,
                         bc_feature_weight=args.bc_feature_weight, bc_ramp=[30,90])
@@ -1300,9 +1306,12 @@ class LocalPPFPSL:
         it_l = iter(lab_loader)
         it_u = iter(u_loader)
         trust_rows = []
-        risk_enabled = bool(getattr(args, 'trusted_a_risk', 0))
+        risk_enabled = bool(getattr(args, 'trusted_a_risk', 0) or getattr(args, 'trusted_class_risk', 0))
         risk_buffer = new_risk_audit(args.num_classes, self.device) if risk_enabled else None
         risk_calibration_rows = []
+        pair_enabled = bool(getattr(args,'trusted_class_risk',0))
+        pair_buffer = pair_risk.new_audit(args.num_classes,self.device) if pair_enabled else None
+        pair_calibration_rows = []
         trusted_mode = getattr(args, "pp_geom_mode", "legacy") == "trusted" and phase >= 2
         weight_gate = trusted_weight_gate(round_idx, g_gate, args)
         early_weighting = (getattr(args, "pp_geom_mode", "legacy") == "trusted"
@@ -1315,11 +1324,19 @@ class LocalPPFPSL:
                     self.model, data_client_labeled, to_tensor_normalize(args.dataset),
                     args.num_classes, self.device, int(getattr(args, "pp_trust_min_count", 4)),
                     **(dict(risk_threshold=tau_warmup_eff, risk_temperature=args.T) if risk_enabled else {}),
+                    **(dict(pair_specific=True) if pair_enabled else {}),
                 )
                 if risk_enabled:
                     cal = trusted_ref['risk_calibration']
                     cal_counts = cal['count'].cpu().tolist()
                     cal_errors = cal['errors'].cpu().tolist()
+                    if pair_enabled:
+                        pc=cal['pairs']['count'].cpu();pe=cal['pairs']['errors'].cpu()
+                        for cls,rival,band,strength in (pc>0).nonzero().tolist():
+                            pair_calibration_rows.append(dict(epoch=_local_epoch+1,pred_class=cls,
+                                rival_class=rival,confidence_band=band,strength_band=strength,
+                                query_count=float(pc[cls,rival,band,strength]),
+                                query_errors=float(pe[cls,rival,band,strength])))
                     for cls in range(args.num_classes):
                         for band in range(2):
                             for group, group_name in enumerate(RISK_GROUPS):
@@ -1413,8 +1430,11 @@ class LocalPPFPSL:
                         if risk_enabled:
                             risk = score_a_risk(zg, yhat, geometry_logits, trusted_ref, weight_gate,
                                 _step / max(1, local_iter), args.risk_distance_cap,
-                                args.risk_conflict_cap, args.risk_prior_count, args.T)
+                                args.risk_conflict_cap, args.risk_prior_count, args.T,
+                                class_specific=bool(getattr(args, 'trusted_class_risk', 0)))
                             audit_a_risk(risk_buffer, risk, in_A, yhat, y_u_gt, early_tg['weight'])
+                            if pair_enabled:
+                                pair_risk.audit(pair_buffer,risk,yhat,in_A,y_u_gt)
                             w_A = in_A.float() * risk['weight']
                         wb_phase1 = s_i * early_tg["weight"]
                         log_acc["trust_authority_sum"] = log_acc.get("trust_authority_sum", 0.0) + float(early_tg["authority"].sum())
@@ -1583,8 +1603,11 @@ class LocalPPFPSL:
                         if risk_enabled:
                             risk = score_a_risk(zg, yhat, geometry_logits, trusted_ref, weight_gate,
                                 _step / max(1, local_iter), args.risk_distance_cap,
-                                args.risk_conflict_cap, args.risk_prior_count, args.T)
+                                args.risk_conflict_cap, args.risk_prior_count, args.T,
+                                class_specific=bool(getattr(args, 'trusted_class_risk', 0)))
                             audit_a_risk(risk_buffer, risk, in_A, yhat, y_u_gt, tg['weight'])
+                            if pair_enabled:
+                                pair_risk.audit(pair_buffer,risk,yhat,in_A,y_u_gt)
                             w_full = in_A.float() * risk['weight']
                     else:
                         w_geom = (s_i ** args.w_gamma * m_tilde).clamp(args.w_min, 1.0)
@@ -1815,6 +1838,8 @@ class LocalPPFPSL:
             "trust_rows": trust_rows,
             "risk_rows": risk_audit_rows(risk_buffer) if risk_buffer is not None else [],
             "risk_calibration_rows": risk_calibration_rows,
+            "pair_rows": pair_risk.rows(pair_buffer) if pair_enabled else [],
+            "pair_calibration_rows": pair_calibration_rows,
         }
 
         proto_upload = {
@@ -2201,6 +2226,8 @@ def fixmatch(alpha):
             )
             trust_rows = st_new.pop("trust_rows", [])
             for state_key, filename in [('risk_rows', 'risk_audit.csv'),
+                                        ('pair_rows','pair_risk_audit.csv'),
+                                        ('pair_calibration_rows','pair_calibration.csv'),
                                         ('risk_calibration_rows', 'risk_calibration.csv')]:
                 risk_rows = st_new.pop(state_key, [])
                 if risk_rows:

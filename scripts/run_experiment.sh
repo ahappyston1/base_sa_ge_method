@@ -19,7 +19,7 @@ if [[ $# -gt 0 && "$1" == --dry-run ]]; then
   shift
 fi
 [[ $# -eq 0 ]] || { echo 'Unexpected arguments' >&2; exit 2; }
-case "$EXPERIMENT" in trusted_lr015_bc|trusted_lr015_prox|trusted_lr015_risk|trusted_multi|trusted_multi_tail|trusted_lr015_tail500|trusted_lr015_early|trusted_lr015|legacy_lr015_500|legacy_lr020|trusted|high_lr|reference) ;; *) echo "Unknown experiment: $EXPERIMENT" >&2; exit 2 ;; esac
+case "$EXPERIMENT" in trusted_lr015_classrisk|trusted_lr015_bc|trusted_lr015_prox|trusted_lr015_risk|trusted_multi|trusted_multi_tail|trusted_lr015_tail500|trusted_lr015_early|trusted_lr015|legacy_lr015_500|legacy_lr020|trusted|high_lr|reference) ;; *) echo "Unknown experiment: $EXPERIMENT" >&2; exit 2 ;; esac
 [[ "$GPU_ID" =~ ^[0-9]+$ && "$SEED_ID" =~ ^[0-9]+$ ]] || { echo 'GPU and seed must be nonnegative integers' >&2; exit 2; }
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REV=rev13

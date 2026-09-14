@@ -261,6 +261,7 @@ def args_parser():
                         help='0 disables early weighting; 30 starts positive soft weighting at round31')
     parser.add_argument('--trusted_weight_end', type=int, default=60)
     parser.add_argument('--trusted_a_risk', type=int, choices=(0, 1), default=0)
+    parser.add_argument('--trusted_class_risk', type=int, choices=(0, 1), default=0)
     parser.add_argument('--bc_teacher', type=int, choices=(0,1), default=0)
     parser.add_argument('--bc_ema', type=float, default=.99)
     parser.add_argument('--bc_feature_weight', type=float, default=.10)
@@ -291,10 +292,10 @@ def args_parser():
         raise FileNotFoundError(f'--config 指定的 YAML 不存在: {yp}')
 
     args = parser.parse_args()
-    if args.bc_teacher or args.mid_prox_mu:
+    if args.bc_teacher or args.mid_prox_mu or args.trusted_class_risk:
         if args.experiment_engine != 'baseline' or args.pp_geom_mode != 'trusted' or args.pp_teacher:
             parser.error('Exploration requires baseline trusted with pp_teacher=0 (A remains student-routed)')
-        if args.trusted_a_risk or (args.bc_teacher and args.mid_prox_mu):
+        if sum(bool(x) for x in (args.trusted_a_risk,args.trusted_class_risk,args.bc_teacher,args.mid_prox_mu)) > 1:
             parser.error('Run risk, BC teacher, and proximal directions independently first')
     if not (0 <= args.bc_ema < 1 and math.isfinite(args.bc_feature_weight) and args.bc_feature_weight >= 0
             and math.isfinite(args.mid_prox_mu) and args.mid_prox_mu >= 0):
@@ -306,9 +307,9 @@ def args_parser():
     if any(r <= 0 or (args.max_rounds and r > args.max_rounds) for r in diagnostic_rounds):
         parser.error('diagnostic_update_rounds must lie within the experiment')
     args.diagnostic_update_rounds = ','.join(str(r) for r in sorted(set(diagnostic_rounds)))
-    if args.trusted_a_risk:
+    if args.trusted_a_risk or args.trusted_class_risk:
         if args.experiment_engine != 'baseline' or args.pp_geom_mode != 'trusted':
-            parser.error('trusted_a_risk requires baseline engine with trusted geometry')
+            parser.error('risk experiments require baseline engine with trusted geometry')
         if not (0 <= args.risk_distance_cap <= args.risk_conflict_cap <= 1
                 and math.isfinite(args.risk_prior_count) and args.risk_prior_count > 0):
             parser.error('Require 0 <= distance cap <= conflict cap <= 1 and positive risk_prior_count')
