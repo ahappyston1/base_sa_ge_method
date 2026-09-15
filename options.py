@@ -264,6 +264,12 @@ def args_parser():
     parser.add_argument('--bc_teacher', type=int, choices=(0,1), default=0)
     parser.add_argument('--bc_ema', type=float, default=.99)
     parser.add_argument('--bc_feature_weight', type=float, default=.10)
+    parser.add_argument('--bc_tail', choices=('none','breliability','aguard','featurehalf'), default='none')
+    parser.add_argument('--bc_fork', type=int, choices=(0,1), default=0,
+                        help='Explicitly fork complete baseline BC round225 state into a new run')
+    parser.add_argument('--save_checkpoint_rounds', type=str, default='225')
+    parser.add_argument('--stop_after_round', type=int, default=0,
+                        help='Stop execution early without changing the LR/phase horizon')
     parser.add_argument('--mid_prox_mu', type=float, default=0.)
     parser.add_argument('--risk_distance_cap', type=float, default=.15)
     parser.add_argument('--risk_conflict_cap', type=float, default=.60)
@@ -291,6 +297,22 @@ def args_parser():
         raise FileNotFoundError(f'--config 指定的 YAML 不存在: {yp}')
 
     args = parser.parse_args()
+    if (args.bc_tail != 'none' or args.bc_fork) and not args.bc_teacher:
+        parser.error('BC tail/fork requires bc_teacher=1')
+    if args.bc_tail != 'none' and (args.max_rounds != 300 or args.baseline_schedule_rounds not in (0,300)
+                                   or args.bc_feature_weight != .10):
+        parser.error('BC tail recipes require max_rounds=300, original 300-round horizon and feature weight=0.10')
+    if args.bc_fork and (not args.resume or not args.run_id):
+        parser.error('BC fork requires --resume and a new explicit --run_id')
+    if args.stop_after_round < 0 or (args.max_rounds and args.stop_after_round > args.max_rounds):
+        parser.error('stop_after_round must be within max_rounds')
+    try:
+        rounds = sorted(set(int(x) for x in args.save_checkpoint_rounds.split(',') if x.strip()))
+        if any(r <= 0 for r in rounds):
+            raise ValueError()
+    except ValueError:
+        parser.error('save_checkpoint_rounds must contain positive integers')
+    args.save_checkpoint_rounds = ','.join(map(str, rounds))
     if args.bc_teacher or args.mid_prox_mu:
         if args.experiment_engine != 'baseline' or args.pp_geom_mode != 'trusted' or args.pp_teacher:
             parser.error('Exploration requires baseline trusted with pp_teacher=0 (A remains student-routed)')

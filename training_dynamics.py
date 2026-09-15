@@ -91,6 +91,17 @@ def dynamics_row(round_idx, phase, logs, args):
         row['teacher_b_visits'] = int(total('bc_teacher_b_total'))
         row['teacher_b_precision'] = total('bc_teacher_b_correct')/max(total('bc_teacher_b_total'),1)
         row['bc_feature_std'] = sum(float(x.get('bc_feature_std',0))*float(x['n_batches']) for x in logs)/max(steps,1)
+    if getattr(args, 'bc_tail', 'none') != 'none':
+        from bc_tail import gate
+        row['tail_gate'] = gate(round_idx)
+        for key in ('tail_b_old_mass','tail_b_new_mass','tail_b_old_wrong','tail_b_new_wrong',
+                    'tail_a_guard_visits','tail_a_guard_correct','tail_a_removed_correct','tail_a_removed_wrong',
+                    'tail_b_true_prob','tail_b_true_nll'):
+            row[key] = total(key)
+        for band in range(3):
+            for suffix in ('visits', 'correct'):
+                key = f'tail_score_{band}_{suffix}'
+                row[key] = total(key)
     row["loss_observed"] = sum(float(x["loss"]) * float(x["n_batches"]) for x in logs) / max(steps, 1)
     row["u_visits"] = int(n)
     row["local_steps"] = int(steps)

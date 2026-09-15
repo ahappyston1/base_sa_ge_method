@@ -11,6 +11,8 @@ import numpy as np
 from torch.utils.data.dataset import Dataset
 import copy
 import math
+import random
+import torch
 
 import numpy as np
 from PIL import Image
@@ -191,6 +193,16 @@ class Indices2Dataset_unlabeled_fixmatch(Dataset):
         sample_id = int(self.indices[real_idx])
         weak = self.weak(image)
         strong = self.strong(image)
+        if getattr(self, 'second_weak', False):
+            # Extra view must not advance the original augmentation RNG stream.
+            py_state, np_state = random.getstate(), np.random.get_state()
+            try:
+                with torch.random.fork_rng(devices=[]):
+                    second = self.normalize(self.weak(image))
+            finally:
+                random.setstate(py_state)
+                np.random.set_state(np_state)
+            return self.normalize(weak), self.normalize(strong), label, sample_id, second
         return self.normalize(weak), self.normalize(strong), label, sample_id
 
     def __len__(self):

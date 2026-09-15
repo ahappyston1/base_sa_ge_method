@@ -42,6 +42,7 @@ import csv
 import time
 import json
 from trusted_geometry import refresh_reference, score_queries
+import bc_tail
 from exploration import (initialize_heads, ema as bc_ema_update, teacher_objectives,
                          ramp as exploration_ramp, prox_coefficient, proximal_loss)
 from trusted_risk import (score_a as score_a_risk, audit as audit_a_risk, GROUPS as RISK_GROUPS,
@@ -83,6 +84,8 @@ def _run_paths(dataset, alpha, args) -> Dict[str, str]:
         run_id = time.strftime("%Y%m%d_%H%M%S")
     # %g 归一 alpha：1.0 与 1 得到同一个目录名，便于脚本预先建目录
     run_dir = os.path.join(".", "results", str(dataset), "runs", f"{run_id}_a{float(alpha):g}")
+    if getattr(args, 'bc_fork', 0) and os.path.exists(run_dir):
+        raise ValueError('BC fork requires a new, nonexistent run directory')
     os.makedirs(run_dir, exist_ok=True)
     return {
         "run_id": run_id,
@@ -335,6 +338,9 @@ def _write_run_config(path: str, args, extra: Dict[str, Any]) -> None:
         "eta_B": float(args.eta_B),
         "run_id": extra.get("run_id"),
     }
+    cfg['bc_tail'] = getattr(args, 'bc_tail', 'none')
+    cfg['fork_source'] = os.path.abspath(args.resume) if getattr(args, 'bc_fork', 0) else None
+    cfg['stop_after_round'] = getattr(args, 'stop_after_round', 0)
     if getattr(args, 'diagnostic_update_rounds', ''):
         cfg['diagnostic_update_rounds'] = args.diagnostic_update_rounds
     with open(path, "w", encoding="utf8") as f:
@@ -367,6 +373,8 @@ def _geometry_controls(args) -> Dict[str, Any]:
                         bc_feature_weight=args.bc_feature_weight, bc_ramp=[30,90])
     if getattr(args, 'mid_prox_mu', 0):
         controls.update(mid_prox_mu=args.mid_prox_mu, prox_version=1, prox_schedule=[30,60,200,250])
+    if getattr(args, "bc_tail", "none") != "none":
+        controls["bc_tail"] = bc_tail.tail_controls(args.bc_tail)
     return controls
 
 
@@ -1136,6 +1144,9 @@ class LocalPPFPSL:
         self.model.train()
         bc_enabled = bool(getattr(args, 'bc_teacher', 0))
         bc_gate = exploration_ramp(round_idx,30,90) if bc_enabled else 0.
+        tail_mode = getattr(args, "bc_tail", "none")
+        tail_gate = bc_tail.gate(round_idx) if tail_mode != "none" else 0.
+        data_client_unlabeled.second_weak = tail_gate > 0 and tail_mode in ("breliability", "aguard")
         prox_mu = prox_coefficient(round_idx,args) if getattr(args,'mid_prox_mu',0) else 0.
         anchor = {n:p.detach().clone() for n,p in self.model.named_parameters()} if prox_mu else None
         if bc_enabled:
@@ -1346,7 +1357,8 @@ class LocalPPFPSL:
                 except StopIteration:
                     it_u = iter(u_loader)
                     u_batch = next(it_u)
-                uw, us, y_u_gt, u_ids = u_batch
+                uw, us, y_u_gt, u_ids = u_batch[:4]
+                second_weak = u_batch[4].to(self.device) if len(u_batch) == 5 else None
 
                 x, y = x.to(self.device, non_blocking=True), y.to(self.device, non_blocking=True)
                 uw = uw.to(self.device, non_blocking=True)
@@ -1595,9 +1607,6 @@ class LocalPPFPSL:
                     L_A, L_B = _unlabeled_ab_losses(
                         logs, logw, yhat, in_A, in_B, w_full, b_score, args.T
                     )
-                    if audit_counts is not None:
-                        audit_accumulate(audit_counts, s_i, yhat, y_u_gt, m_i, delta_i,
-                                         geom_ok, in_A, w_full)
                     log_acc["r_mean"] += float(r_i.mean().item())
                     log_acc["m_mean"] += float(m_i.mean().item())
                     log_acc["alpha_t"] += float(alpha_t.mean().item())
@@ -1658,11 +1667,74 @@ class LocalPPFPSL:
                         + args.lambda_proto * L_proto
                     )
 
+                if bc_enabled:
+                    teacher_b = L_B
+                    feature_effective = logs.new_zeros(())
+                    if bc_gate > 0:
+                        with torch.no_grad():
+                            zt, lt = self._forward_z_logits(uw,self.teacher)
+                        bw = wb_phase1 if phase == 1 else b_score
+                        if second_weak is not None:
+                            with torch.no_grad():
+                                _, lt2 = self._forward_z_logits(second_weak, self.teacher)
+                                scores, tq, tq2 = bc_tail.reliability(lt, lt2, args.T)
+                            if tail_mode == 'breliability':
+                                old_bw = bw.detach() * in_B
+                                bw = bc_tail.reweight_b(bw, in_B, scores, tail_gate)
+                                teacher_wrong = tq.argmax(-1) != y_u_gt
+                                for key, value in dict(tail_b_old_mass=old_bw.sum(), tail_b_new_mass=bw.sum(),
+                                    tail_b_old_wrong=old_bw[teacher_wrong].sum(), tail_b_new_wrong=bw[teacher_wrong].sum()).items():
+                                    log_acc[key] = log_acc.get(key, 0.) + float(value)
+                                for band, selected in enumerate((scores < .6, (scores >= .6) & (scores < .9), scores >= .9)):
+                                    selected = selected & in_B
+                                    for suffix, value in [('visits', selected.sum()), ('correct', (selected & ~teacher_wrong).sum())]:
+                                        key = f'tail_score_{band}_{suffix}'
+                                        log_acc[key] = log_acc.get(key, 0.) + float(value)
+                            elif tail_mode == 'aguard':
+                                old_aw = w_A if phase == 1 else w_full
+                                new_aw, selected = bc_tail.guard_a(old_aw, in_A, yhat, tq, tq2, tail_gate)
+                                old_a = L_A
+                                L_A = (new_aw * F.cross_entropy(logs, yhat, reduction='none')).mean()
+                                loss = loss + args.lambda_A*lambda_A_scale*(L_A-old_a)
+                                if phase == 1: w_A = new_aw
+                                else: w_full = new_aw
+                                for key, value in dict(tail_a_guard_visits=selected.sum(),
+                                    tail_a_guard_correct=(selected & (yhat == y_u_gt)).sum(),
+                                    tail_a_removed_correct=((old_aw-new_aw)*(yhat == y_u_gt)).sum(),
+                                    tail_a_removed_wrong=((old_aw-new_aw)*(yhat != y_u_gt)).sum()).items():
+                                    log_acc[key] = log_acc.get(key, 0.) + float(value)
+                        teacher_b, feature = teacher_objectives(zs,logs,zt,lt,self.bc_heads,
+                            self.bc_target,in_B,in_C,bw,args.T)
+                        old_b = L_B
+                        L_B = (1-bc_gate)*old_b + bc_gate*teacher_b
+                        bcoef = args.lambda_B*lambda_B_scale*(aux_scale if phase==1 else 1.)
+                        feature_coefficient = args.bc_feature_weight - (.05*tail_gate if tail_mode == "featurehalf" else 0.)
+                        feature_effective = bc_gate*feature_coefficient*feature
+                        loss = loss + bcoef*(L_B-old_b) + feature_effective
+                        # Diagnostic GT is only consumed after targets and loss are computed.
+                        log_acc['bc_teacher_b_correct'] = log_acc.get('bc_teacher_b_correct',0.) + float(((lt.argmax(-1)==y_u_gt)&in_B).sum())
+                        log_acc['bc_teacher_b_total'] = log_acc.get('bc_teacher_b_total',0.) + float(in_B.sum())
+                        with torch.no_grad():
+                            teacher_q = F.softmax(lt/args.T, -1)
+                            true_prob = teacher_q.gather(1, y_u_gt[:,None]).squeeze(1)
+                            for key, value in dict(tail_b_true_prob=(true_prob*in_B).sum(),
+                                tail_b_true_nll=(-true_prob.clamp_min(1e-12).log()*in_B).sum()).items():
+                                log_acc[key] = log_acc.get(key, 0.) + float(value)
+                        log_acc['bc_feature_std'] = log_acc.get('bc_feature_std',0.) + float(zs.detach().std(dim=0,unbiased=False).mean())
+                    log_acc['L_feature_effective'] = log_acc.get('L_feature_effective',0.) + float(feature_effective.detach())
+                if getattr(args,'mid_prox_mu',0):
+                    prox = proximal_loss(self.model,anchor,prox_mu) if prox_mu else logs.new_zeros(())
+                    loss = loss + prox
+                    log_acc['L_prox_effective'] = log_acc.get('L_prox_effective',0.) + float(prox.detach())
+                if audit_counts is not None:
+                    audit_accumulate(audit_counts, s_i, yhat, y_u_gt, m_i, delta_i,
+                                     geom_ok, in_A, w_full)
                 if int(getattr(args, "diag_geom", 1)):
                     # Read-only: GT never changes weights, routing, or losses.
                     with torch.no_grad():
                         wa_diag = w_A.detach() if phase == 1 else w_full.detach()
-                        wb_diag = (wb_phase1 if phase == 1 else b_score).detach() * in_B
+                        wb_diag = (bw if tail_gate > 0 and tail_mode == 'breliability' else
+                                   (wb_phase1 if phase == 1 else b_score)).detach() * in_B
                         wa_diag = wa_diag * (args.lambda_A * lambda_A_scale)
                         wb_diag = wb_diag * (args.lambda_B * lambda_B_scale)
                         if phase == 1:
@@ -1674,29 +1746,6 @@ class LocalPPFPSL:
                                 key = "dyn_" + bucket + "_" + suffix
                                 log_acc[key] = log_acc.get(key, 0.0) + float(value.item())
 
-                if bc_enabled:
-                    teacher_b = L_B
-                    feature_effective = logs.new_zeros(())
-                    if bc_gate > 0:
-                        with torch.no_grad():
-                            zt, lt = self._forward_z_logits(uw,self.teacher)
-                        bw = wb_phase1 if phase == 1 else b_score
-                        teacher_b, feature = teacher_objectives(zs,logs,zt,lt,self.bc_heads,
-                            self.bc_target,in_B,in_C,bw,args.T)
-                        old_b = L_B
-                        L_B = (1-bc_gate)*old_b + bc_gate*teacher_b
-                        bcoef = args.lambda_B*lambda_B_scale*(aux_scale if phase==1 else 1.)
-                        feature_effective = bc_gate*args.bc_feature_weight*feature
-                        loss = loss + bcoef*(L_B-old_b) + feature_effective
-                        # Diagnostic GT is only consumed after targets and loss are computed.
-                        log_acc['bc_teacher_b_correct'] = log_acc.get('bc_teacher_b_correct',0.) + float(((lt.argmax(-1)==y_u_gt)&in_B).sum())
-                        log_acc['bc_teacher_b_total'] = log_acc.get('bc_teacher_b_total',0.) + float(in_B.sum())
-                        log_acc['bc_feature_std'] = log_acc.get('bc_feature_std',0.) + float(zs.detach().std(dim=0,unbiased=False).mean())
-                    log_acc['L_feature_effective'] = log_acc.get('L_feature_effective',0.) + float(feature_effective.detach())
-                if getattr(args,'mid_prox_mu',0):
-                    prox = proximal_loss(self.model,anchor,prox_mu) if prox_mu else logs.new_zeros(())
-                    loss = loss + prox
-                    log_acc['L_prox_effective'] = log_acc.get('L_prox_effective',0.) + float(prox.detach())
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 self.optimizer.step()
@@ -2134,6 +2183,8 @@ def fixmatch(alpha):
 
     fedavg_acc = []
     start_round = 1
+    if paths["resume_src"] and not os.path.isfile(load_ckpt):
+        raise FileNotFoundError(load_ckpt)
     if os.path.isfile(load_ckpt):
         ckpt = torch.load(load_ckpt, map_location='cpu', weights_only=False)
         if ckpt.get('method_rev') != METHOD_REV:
@@ -2144,7 +2195,10 @@ def fixmatch(alpha):
                 f'从头训练并写入 {ckpt_path}'
             )
         else:
-            if ckpt.get('geometry_controls') != _geometry_controls(args):
+            if getattr(args, 'bc_fork', 0):
+                bc_tail.validate_fork(ckpt, _geometry_controls(args), lr_controls(args),
+                                      load_ckpt, paths['run_dir'], bc_tail.run_identity(args))
+            if not getattr(args, 'bc_fork', 0) and ckpt.get('geometry_controls') != _geometry_controls(args):
                 raise ValueError('Geometry controls differ from checkpoint; restore flags or start a fresh run')
             if ckpt.get('lr_controls') != lr_controls(args):
                 raise ValueError('LR controls missing or different in checkpoint; start a fresh run without --resume')
@@ -2167,7 +2221,8 @@ def fixmatch(alpha):
                 schedule.load_state_dict(ckpt['schedule'])
             print(f'[Resume] 从第 {start_round} 轮继续，已有 {len(fedavg_acc)} 轮结果，phase={schedule.phase}')
 
-    for r in tqdm(range(start_round, args.num_rounds + 1), desc='Server'):
+    execution_end = getattr(args, 'stop_after_round', 0) or args.num_rounds
+    for r in tqdm(range(start_round, execution_end + 1), desc='Server'):
         snap = schedule.for_round(r)
 
         dict_global_params = global_model.download_params()
@@ -2406,8 +2461,16 @@ def fixmatch(alpha):
             'geometry_controls': _geometry_controls(args),
             'lr_controls': lr_controls(args),
             'run_id': paths["run_id"],
+            'run_identity': bc_tail.run_identity(args),
+            'fork_source': paths['resume_src'] if getattr(args, 'bc_fork', 0) else None,
         }
-        torch.save(checkpoint_state, ckpt_path)
+        temporary = ckpt_path + '.tmp'
+        torch.save(checkpoint_state, temporary)
+        os.replace(temporary, ckpt_path)
+        if r in {int(x) for x in getattr(args, 'save_checkpoint_rounds', '').split(',') if x}:
+            snapshot = os.path.join(paths['run_dir'], f'round_{r:04d}.pt')
+            torch.save(checkpoint_state, snapshot + '.tmp')
+            os.replace(snapshot + '.tmp', snapshot)
         if args.num_rounds > schedule_rounds(args) and r == schedule_rounds(args):
             torch.save(checkpoint_state, os.path.join(paths['run_dir'], 'main_end.pt'))
 
