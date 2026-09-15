@@ -264,6 +264,7 @@ def args_parser():
     parser.add_argument('--bc_teacher', type=int, choices=(0,1), default=0)
     parser.add_argument('--bc_ema', type=float, default=.99)
     parser.add_argument('--bc_feature_weight', type=float, default=.10)
+    parser.add_argument('--bc_a_repair', choices=('none','recover','correct','joint'), default='none')
     parser.add_argument('--bc_tail', choices=('none','breliability','aguard','featurehalf'), default='none')
     parser.add_argument('--bc_fork', type=int, choices=(0,1), default=0,
                         help='Explicitly fork complete baseline BC round225 state into a new run')
@@ -297,6 +298,13 @@ def args_parser():
         raise FileNotFoundError(f'--config 指定的 YAML 不存在: {yp}')
 
     args = parser.parse_args()
+    if args.bc_a_repair != 'none':
+        if not args.bc_teacher or args.bc_tail != 'none' or args.bc_fork:
+            parser.error('A repair requires BC, no tail variant, and no BC checkpoint fork')
+        if args.dataset != 'CIFAR10' or args.T != 1.0 or args.max_rounds != 300:
+            parser.error('A repair recipes require CIFAR10, T=1 and 300 rounds')
+        if args.trusted_weight_start != 30 or args.trusted_weight_end != 60:
+            parser.error('A repair requires original BC trusted ramp 30-60')
     if (args.bc_tail != 'none' or args.bc_fork) and not args.bc_teacher:
         parser.error('BC tail/fork requires bc_teacher=1')
     if args.bc_tail != 'none' and (args.max_rounds != 300 or args.baseline_schedule_rounds not in (0,300)

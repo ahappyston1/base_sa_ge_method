@@ -102,6 +102,13 @@ def dynamics_row(round_idx, phase, logs, args):
             for suffix in ('visits', 'correct'):
                 key = f'tail_score_{band}_{suffix}'
                 row[key] = total(key)
+    if getattr(args, 'bc_a_repair', 'none') != 'none':
+        from bc_joint import FIELDS, gates
+        row['repair_recover_gate'], row['repair_correct_gate'] = gates(round_idx)
+        for cls in range(10):
+            for name in FIELDS:
+                key = f'repair_c{cls}_{name}'
+                row[key] = total(key)
     row["loss_observed"] = sum(float(x["loss"]) * float(x["n_batches"]) for x in logs) / max(steps, 1)
     row["u_visits"] = int(n)
     row["local_steps"] = int(steps)

@@ -43,6 +43,7 @@ import time
 import json
 from trusted_geometry import refresh_reference, score_queries
 import bc_tail
+import bc_joint
 from exploration import (initialize_heads, ema as bc_ema_update, teacher_objectives,
                          ramp as exploration_ramp, prox_coefficient, proximal_loss)
 from trusted_risk import (score_a as score_a_risk, audit as audit_a_risk, GROUPS as RISK_GROUPS,
@@ -338,6 +339,7 @@ def _write_run_config(path: str, args, extra: Dict[str, Any]) -> None:
         "eta_B": float(args.eta_B),
         "run_id": extra.get("run_id"),
     }
+    cfg['bc_a_repair'] = getattr(args, 'bc_a_repair', 'none')
     cfg['bc_tail'] = getattr(args, 'bc_tail', 'none')
     cfg['fork_source'] = os.path.abspath(args.resume) if getattr(args, 'bc_fork', 0) else None
     cfg['stop_after_round'] = getattr(args, 'stop_after_round', 0)
@@ -373,6 +375,8 @@ def _geometry_controls(args) -> Dict[str, Any]:
                         bc_feature_weight=args.bc_feature_weight, bc_ramp=[30,90])
     if getattr(args, 'mid_prox_mu', 0):
         controls.update(mid_prox_mu=args.mid_prox_mu, prox_version=1, prox_schedule=[30,60,200,250])
+    if getattr(args, "bc_a_repair", "none") != "none":
+        controls["bc_a_repair"] = bc_joint.controls(args.bc_a_repair)
     if getattr(args, "bc_tail", "none") != "none":
         controls["bc_tail"] = bc_tail.tail_controls(args.bc_tail)
     return controls
@@ -1146,7 +1150,12 @@ class LocalPPFPSL:
         bc_gate = exploration_ramp(round_idx,30,90) if bc_enabled else 0.
         tail_mode = getattr(args, "bc_tail", "none")
         tail_gate = bc_tail.gate(round_idx) if tail_mode != "none" else 0.
-        data_client_unlabeled.second_weak = tail_gate > 0 and tail_mode in ("breliability", "aguard")
+        repair_mode = getattr(args, "bc_a_repair", "none")
+        recover_gate, correct_gate = bc_joint.gates(round_idx)
+        repair_active = repair_mode != "none" and (
+            (repair_mode in ("recover", "joint") and recover_gate > 0) or
+            (repair_mode in ("correct", "joint") and correct_gate > 0))
+        data_client_unlabeled.second_weak = repair_active or (tail_gate > 0 and tail_mode in ("breliability", "aguard"))
         prox_mu = prox_coefficient(round_idx,args) if getattr(args,'mid_prox_mu',0) else 0.
         anchor = {n:p.detach().clone() for n,p in self.model.named_parameters()} if prox_mu else None
         if bc_enabled:
@@ -1397,6 +1406,15 @@ class LocalPPFPSL:
                 else:
                     zw, logw = self._forward_z_logits(uw)
 
+                repair_teacher = None
+                repair_result = None
+                if repair_active:
+                    with torch.no_grad():
+                        zt_repair, lt_repair = self._forward_z_logits(uw, self.teacher)
+                        _, lt2_repair = self._forward_z_logits(second_weak, self.teacher)
+                        repair_scores, repair_q, repair_p = bc_tail.reliability(lt_repair, lt2_repair, args.T)
+                    repair_teacher = (zt_repair, lt_repair)
+
                 probs = F.softmax(logw / args.T, dim=-1)
                 s_i, yhat = probs.max(dim=-1)
 
@@ -1434,6 +1452,20 @@ class LocalPPFPSL:
                     L_A, L_B = _unlabeled_ab_losses(
                         logs, logw, yhat, in_A, in_B, w_A, wb_phase1, args.T
                     )
+                    if repair_active:
+                        repair_old_weight = w_A.detach()
+                        repair_proto_weight = in_A.float() * (s_i.detach() ** args.w_gamma).clamp(args.w_min, 1.0)
+                        repair_result = bc_joint.decisions(repair_old_weight, in_A, yhat,
+                            repair_q, repair_p, repair_scores, zg, trusted_ref,
+                            recover_gate, correct_gate, repair_mode)
+                        L_A = bc_joint.loss(logs, yhat, repair_result)
+                        w_A = repair_result['weight']
+                        repair_audit = bc_joint.audit(repair_result, repair_old_weight, in_A,
+                            yhat, y_u_gt, repair_proto_weight).cpu().tolist()
+                        for cls, values in enumerate(repair_audit):
+                            for name, value in zip(bc_joint.FIELDS, values):
+                                key = f'repair_c{cls}_{name}'
+                                log_acc[key] = log_acc.get(key, 0.) + value
                     log_acc["r_mean"] += float(s_i.mean().item())
                     log_acc["m_mean"] += 0.0
                     log_acc["alpha_t"] += 1.0
@@ -1454,6 +1486,8 @@ class LocalPPFPSL:
                             gt_sel = y_u_gt[mask]
                             ids_sel = u_ids[mask]
                             wi = (s_sel ** args.w_gamma).clamp(args.w_min, 1.0)
+                            if repair_result is not None:
+                                wi = wi * repair_result['proto_factor'][mask]
                             # 写原型独立于 CE：更严筛选 / 更狠权重，默认无操作
                             wi, keep = _proto_write_weight(wi, s_sel, args)
                             if keep is not None:
@@ -1607,6 +1641,20 @@ class LocalPPFPSL:
                     L_A, L_B = _unlabeled_ab_losses(
                         logs, logw, yhat, in_A, in_B, w_full, b_score, args.T
                     )
+                    if repair_active:
+                        repair_old_weight = w_full.detach()
+                        repair_proto_weight = w_full.detach()
+                        repair_result = bc_joint.decisions(repair_old_weight, in_A, yhat,
+                            repair_q, repair_p, repair_scores, zg, trusted_ref,
+                            recover_gate, correct_gate, repair_mode)
+                        L_A = bc_joint.loss(logs, yhat, repair_result)
+                        w_full = repair_result['weight']
+                        repair_audit = bc_joint.audit(repair_result, repair_old_weight, in_A,
+                            yhat, y_u_gt, repair_proto_weight).cpu().tolist()
+                        for cls, values in enumerate(repair_audit):
+                            for name, value in zip(bc_joint.FIELDS, values):
+                                key = f'repair_c{cls}_{name}'
+                                log_acc[key] = log_acc.get(key, 0.) + value
                     log_acc["r_mean"] += float(r_i.mean().item())
                     log_acc["m_mean"] += float(m_i.mean().item())
                     log_acc["alpha_t"] += float(alpha_t.mean().item())
@@ -1633,6 +1681,8 @@ class LocalPPFPSL:
                             zw_a = zw[in_A]
                             cc = yhat[in_A]
                             wi = w_full[in_A]
+                            if repair_result is not None:
+                                wi = (repair_proto_weight * repair_result['proto_factor'])[in_A]
                             s_sel = s_i[in_A]
                             gt_sel = y_u_gt[in_A]
                             ids_sel = u_ids[in_A]
@@ -1672,9 +1722,9 @@ class LocalPPFPSL:
                     feature_effective = logs.new_zeros(())
                     if bc_gate > 0:
                         with torch.no_grad():
-                            zt, lt = self._forward_z_logits(uw,self.teacher)
+                            zt, lt = repair_teacher if repair_teacher is not None else self._forward_z_logits(uw,self.teacher)
                         bw = wb_phase1 if phase == 1 else b_score
-                        if second_weak is not None:
+                        if second_weak is not None and repair_teacher is None:
                             with torch.no_grad():
                                 _, lt2 = self._forward_z_logits(second_weak, self.teacher)
                                 scores, tq, tq2 = bc_tail.reliability(lt, lt2, args.T)
