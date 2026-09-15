@@ -1,5 +1,40 @@
 # BC 第 225 轮分叉：检查与运行
 
+## 全自动运行（推荐）
+
+在原来的训练环境中、仓库根目录执行。GPU编号必须是您已预留的空闲卡，脚本不会侦测或终止其他人的进程：
+
+```bash
+python -u scripts/run_bc_tail_auto.py --gpus 0 1
+```
+
+顺序：原BC前225轮 → 完整checkpoint校验 → 与旧BC逐轮严格比较1–225轮 → 原BC恢复226–230轮 → 严格比较这5轮 → 启动三个尾段实验。两张卡先跑breliability/aguard，任一成功完成后空闲卡接featurehalf；一张卡则顺序执行，三张卡则三个同时运行。前缀和恢复检查使用指定的第一张卡。
+
+默认参考是仓库内已完成的 `rev13_trusted_lr015_bc_s7_20260914_181549_541595_a0.1`，也可以指定：
+
+```bash
+python -u scripts/run_bc_tail_auto.py --gpus 0 1 --reference-run /绝对路径/原BC运行目录
+```
+
+如果已经生成完整225轮前缀，可跳过重跑，但仍执行两道对比检查：
+
+```bash
+python -u scripts/run_bc_tail_auto.py --gpus 0 1 --prefix-checkpoint /绝对路径/round_0225.pt
+```
+
+严格比较metrics中的acc/phase/lr，以及dynamics中的phase/lr/gate/aux_scale/trusted_weight_gate。比较使用CSV原始数值，不四舍五入、不设置容差；缺轮、重复轮、非有限数值或任意不一致都不能通过。不只比较第225轮。CSV一致并不证明参数完全一致，真实GPU复现仍以这一恢复检查作为可观测校验。
+
+所有作业采用独立run_id。总控状态在 `results/bc_tail_launches/<时间_PID>/status.json`，比较结果在prefix_comparison.json/replay_comparison.json，子进程输出在同目录各任务.log。任何前置检查失败都会停止后续启动并以非零码退出。尾段作业失败则取消尚未启动的任务，已经运行的其他任务继续完成。中断总控不会主动杀掉已启动作业，重启前先查看日志中的PID，避免重复占卡。
+
+需要断开SSH后继续运行，可使用：
+
+```bash
+nohup python -u scripts/run_bc_tail_auto.py --gpus 0 1 >> bc_tail_auto.log 2>&1 &
+tail -f bc_tail_auto.log
+```
+
+本地已测试完整控制流程与失败分支（模拟训练进程），没有在本机运行GPU训练。总控不会自动把严格检查失败改为“差不多通过”。
+
 ## 当前检查结论
 
 2026-09-15：本地 results 中没有 .pt 文件，无法验证服务器真实 checkpoint。原程序每轮覆盖 checkpoint.pt，不保留第225轮；只有跨原日程额外延长时才保存 main_end.pt。已结束的300轮 BC 若只有 checkpoint.pt，通常就是300轮，不能回退到225轮。
