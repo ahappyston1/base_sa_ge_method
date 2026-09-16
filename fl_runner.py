@@ -44,6 +44,7 @@ import json
 from trusted_geometry import refresh_reference, score_queries
 import bc_tail
 import bc_targets
+import bc_reconstruction
 from exploration import (initialize_heads, ema as bc_ema_update, teacher_objectives,
                          ramp as exploration_ramp, prox_coefficient, proximal_loss)
 from trusted_risk import (score_a as score_a_risk, audit as audit_a_risk, GROUPS as RISK_GROUPS,
@@ -377,6 +378,8 @@ def _geometry_controls(args) -> Dict[str, Any]:
         controls.update(mid_prox_mu=args.mid_prox_mu, prox_version=1, prox_schedule=[30,60,200,250])
     if getattr(args, 'bc_targets', 0):
         controls['bc_targets'] = bc_targets.controls()
+    if getattr(args, 'bc_reconstruction', 'none') != 'none':
+        controls['bc_reconstruction'] = bc_reconstruction.controls(args)
     if getattr(args, "bc_tail", "none") != "none":
         controls["bc_tail"] = bc_tail.tail_controls(args.bc_tail)
     return controls
@@ -1147,6 +1150,8 @@ class LocalPPFPSL:
         self.optimizer.state.clear()
         self.model.train()
         bc_enabled = bool(getattr(args, 'bc_teacher', 0))
+        rec_mode = getattr(args, 'bc_reconstruction', 'none')
+        rec_enabled = rec_mode != 'none'
         bc_gate = exploration_ramp(round_idx,30,90) if bc_enabled else 0.
         tail_mode = getattr(args, "bc_tail", "none")
         tail_gate = bc_tail.gate(round_idx) if tail_mode != "none" else 0.
@@ -1173,6 +1178,20 @@ class LocalPPFPSL:
             self.teacher.load_state_dict(global_params)
             self.teacher.eval()
             for p in self.teacher.parameters():p.requires_grad_(False)
+        if rec_enabled:
+            if client_state is not None and 'bc_rec_head' not in client_state:
+                raise ValueError('Reconstruction resume requires complete per-client decoder state')
+            if not hasattr(self, 'bc_rec_head'):
+                self.bc_rec_head = bc_reconstruction.initialize(self.dim, args.bc_rec_bottleneck, self.device)
+                self.bc_rec_initial = copy.deepcopy(self.bc_rec_head.state_dict())
+            self.bc_rec_head.load_state_dict((client_state or {}).get('bc_rec_head', self.bc_rec_initial))
+            self.bc_rec_head.train()
+            # Like baseline BC, optimizer momentum resets each local round.
+            # A separate optimizer makes the audit branch gradient-independent.
+            self.bc_rec_optimizer = SGD(self.bc_rec_head.parameters(), lr=args.lr_local_training,
+                                        momentum=.9, weight_decay=1e-4)
+            rec_audit = bc_reconstruction.new_audit(args.num_classes, self.device)
+            rec_reference_rows = []
         use_teacher = bool(int(getattr(args, "pp_teacher", 0)))
         if use_teacher:
             self.teacher.load_state_dict(global_params)
@@ -1186,6 +1205,9 @@ class LocalPPFPSL:
         )
         for pg in self.optimizer.param_groups:
             pg['lr'] = cosine_lr
+        if rec_enabled:
+            for pg in self.bc_rec_optimizer.param_groups:
+                pg['lr'] = cosine_lr
 
         if not inited:
             p_loc, loc_valid = init_p_loc_from_labeled(
@@ -1338,7 +1360,11 @@ class LocalPPFPSL:
                     self.model, data_client_labeled, to_tensor_normalize(args.dataset),
                     args.num_classes, self.device, int(getattr(args, "pp_trust_min_count", 4)),
                     **(dict(risk_threshold=tau_warmup_eff, risk_temperature=args.T) if risk_enabled else {}),
+                    **(dict(include_query_audit=True) if rec_enabled else {}),
                 )
+                if rec_enabled:
+                    rec_reference_rows.extend(dict(epoch=_local_epoch+1, **row)
+                                              for row in trusted_ref['query_audit'])
                 if risk_enabled:
                     cal = trusted_ref['risk_calibration']
                     cal_counts = cal['count'].cpu().tolist()
@@ -1716,6 +1742,8 @@ class LocalPPFPSL:
                         + args.lambda_proto * L_proto
                     )
 
+                rec_probe_loss = None
+                rec_scores = None
                 if bc_enabled:
                     teacher_b = L_B
                     feature_effective = logs.new_zeros(())
@@ -1754,6 +1782,20 @@ class LocalPPFPSL:
                                     log_acc[key] = log_acc.get(key, 0.) + float(value)
                         teacher_b, feature = teacher_objectives(zs,logs,zt,lt,self.bc_heads,
                             self.bc_target,in_B,in_C,bw,args.T)
+                        if rec_enabled:
+                            rec_ratio = 0. if rec_mode == 'unmasked' else args.bc_rec_mask
+                            rec_seed = 2718 + round_idx*1000003 + _local_epoch*10007 + _step
+                            reconstruction = bc_reconstruction.objective(
+                                self.bc_rec_head, zs, zt, in_B | in_C, rec_ratio, rec_seed,
+                                detached=(rec_mode == 'audit'))
+                            # Score with the SAME fixed corruption in all ablations.
+                            # Labels are used only in the post-step audit below.
+                            rec_scores = bc_reconstruction.score(self.bc_rec_head, zs, zt, args.bc_rec_mask)
+                            if rec_mode == 'audit':
+                                rec_probe_loss = bc_gate*args.bc_feature_weight*reconstruction
+                            else:
+                                feature = reconstruction
+                            log_acc['rec_objective'] = log_acc.get('rec_objective', 0.) + float(reconstruction.detach())
                         if target_result is not None:
                             teacher_b = (1-target_gate)*teacher_b + target_gate*target_lb
                             # A samples released from a hard answer keep a gradual feature objective.
@@ -1803,8 +1845,17 @@ class LocalPPFPSL:
                                 log_acc[key] = log_acc.get(key, 0.0) + float(value.item())
 
                 self.optimizer.zero_grad(set_to_none=True)
+                if rec_enabled:
+                    self.bc_rec_optimizer.zero_grad(set_to_none=True)
                 loss.backward()
+                if rec_probe_loss is not None:
+                    rec_probe_loss.backward()
                 self.optimizer.step()
+                if rec_enabled:
+                    self.bc_rec_optimizer.step()
+                    if rec_scores is not None:
+                        bc_reconstruction.accumulate(rec_audit, rec_scores, yhat.detach(), s_i.detach(),
+                                                     in_A, in_B, y_u_gt)
                 if bc_enabled:
                     bc_ema_update(self.teacher,self.model,args.bc_ema)
                     bc_ema_update(self.bc_target,self.bc_heads.projector,args.bc_ema)
@@ -1878,7 +1929,7 @@ class LocalPPFPSL:
 
         log_final = {}
         for k, v in log_acc.items():
-            if k in ("loss", "L_sup", "L_A", "L_B", "L_proto", "r_mean", "m_mean", "alpha_t", "L_feature_effective", "L_prox_effective", "bc_feature_std"):
+            if k in ("loss", "L_sup", "L_A", "L_B", "L_proto", "r_mean", "m_mean", "alpha_t", "L_feature_effective", "L_prox_effective", "bc_feature_std", "rec_objective"):
                 log_final[k] = v / max(1, log_acc["n_batches"])
             elif k in (
                 "lr",
@@ -1929,6 +1980,10 @@ class LocalPPFPSL:
         }
         if bc_enabled:
             new_state['bc_heads'] = {k:v.detach().cpu().clone() for k,v in self.bc_heads.state_dict().items()}
+        if rec_enabled:
+            new_state['bc_rec_head'] = {k:v.detach().cpu().clone() for k,v in self.bc_rec_head.state_dict().items()}
+            new_state['rec_rows'] = bc_reconstruction.audit_rows(rec_audit)
+            new_state['rec_reference_rows'] = rec_reference_rows
 
         if history is not None:
             new_state['target_history'] = history.finish(round_idx)
@@ -2315,7 +2370,9 @@ def fixmatch(alpha):
             )
             trust_rows = st_new.pop("trust_rows", [])
             for state_key, filename in [('risk_rows', 'risk_audit.csv'),
-                                        ('risk_calibration_rows', 'risk_calibration.csv')]:
+                                        ('risk_calibration_rows', 'risk_calibration.csv'),
+                                        ('rec_rows', 'reconstruction_audit.csv'),
+                                        ('rec_reference_rows', 'reconstruction_reference.csv')]:
                 risk_rows = st_new.pop(state_key, [])
                 if risk_rows:
                     risk_path = os.path.join(os.path.dirname(paths['trust_reference_path']), filename)

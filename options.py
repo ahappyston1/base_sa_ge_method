@@ -264,6 +264,10 @@ def args_parser():
     parser.add_argument('--bc_teacher', type=int, choices=(0,1), default=0)
     parser.add_argument('--bc_ema', type=float, default=.99)
     parser.add_argument('--bc_feature_weight', type=float, default=.10)
+    parser.add_argument('--bc_reconstruction', choices=('none', 'audit', 'unmasked', 'masked'), default='none',
+                        help='BC feature reconstruction ablation; audit trains a detached probe only')
+    parser.add_argument('--bc_rec_mask', type=float, default=.25)
+    parser.add_argument('--bc_rec_bottleneck', type=int, default=64)
     parser.add_argument('--bc_targets', type=int, choices=(0,1), default=0)
     parser.add_argument('--bc_tail', choices=('none','breliability','aguard','featurehalf'), default='none')
     parser.add_argument('--bc_fork', type=int, choices=(0,1), default=0,
@@ -298,6 +302,15 @@ def args_parser():
         raise FileNotFoundError(f'--config 指定的 YAML 不存在: {yp}')
 
     args = parser.parse_args()
+    if args.bc_reconstruction != 'none':
+        if not args.bc_teacher or args.bc_tail != 'none' or args.bc_targets or args.bc_fork:
+            parser.error('BC reconstruction requires plain BC without tail, targets or fork')
+        if args.trusted_weight_start != 30 or args.trusted_weight_end != 60 or args.bc_feature_weight != .10:
+            parser.error('BC reconstruction preserves the BC trusted ramp and feature coefficient')
+        if args.dataset != 'CIFAR10' or args.max_rounds != 300 or args.baseline_schedule_rounds not in (0, 300):
+            parser.error('BC reconstruction starts with CIFAR10 and the original 300-round horizon')
+        if not (0 < args.bc_rec_mask < 1 and 0 < args.bc_rec_bottleneck < 256):
+            parser.error('BC reconstruction requires 0 < mask < 1 and 0 < bottleneck < 256')
     if args.bc_targets:
         if not args.bc_teacher or args.bc_tail != 'none' or args.bc_fork:
             parser.error('BC targets requires baseline BC without tail/fork')

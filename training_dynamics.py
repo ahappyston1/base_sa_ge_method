@@ -91,6 +91,10 @@ def dynamics_row(round_idx, phase, logs, args):
         row['teacher_b_visits'] = int(total('bc_teacher_b_total'))
         row['teacher_b_precision'] = total('bc_teacher_b_correct')/max(total('bc_teacher_b_total'),1)
         row['bc_feature_std'] = sum(float(x.get('bc_feature_std',0))*float(x['n_batches']) for x in logs)/max(steps,1)
+    if getattr(args, 'bc_reconstruction', 'none') != 'none':
+        row['rec_objective'] = sum(float(x.get('rec_objective', 0))*float(x['n_batches']) for x in logs)/max(steps, 1)
+        # Audit decoder has a separate backward and never enters student loss.
+        row['rec_probe_only'] = int(args.bc_reconstruction == 'audit')
     if getattr(args, 'bc_tail', 'none') != 'none':
         from bc_tail import gate
         row['tail_gate'] = gate(round_idx)

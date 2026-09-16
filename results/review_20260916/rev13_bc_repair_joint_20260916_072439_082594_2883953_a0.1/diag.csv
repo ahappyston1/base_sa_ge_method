@@ -1,0 +1,2 @@
+round,phase,geom_cov,band_n,sup_n,sup_acc,opp_n,opp_acc,c_lowconf,c_wouldB,c_wouldB_geommiss,c_wouldB_conflict,c_wouldB_other,conflictC_n,conflictC_frac,conflictC_clf_acc,conflictC_proto_acc,tau_n,tau_clipped_n,tau_clipped_frac,tau_raw_ge1_n,tau_effective_ge1_n
+1,1,0.0,0,0,0.0,0,0.0,0,0,0,0,0,0,0.0,0.0,0.0,0,0,0.0,0,0

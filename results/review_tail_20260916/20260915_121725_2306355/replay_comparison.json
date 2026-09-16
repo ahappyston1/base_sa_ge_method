@@ -1,0 +1,16 @@
+{
+  "metrics": {
+    "passed": true,
+    "start": 226,
+    "end": 230,
+    "mismatch_count": 0,
+    "first_differences": []
+  },
+  "dynamics": {
+    "passed": true,
+    "start": 226,
+    "end": 230,
+    "mismatch_count": 0,
+    "first_differences": []
+  }
+}

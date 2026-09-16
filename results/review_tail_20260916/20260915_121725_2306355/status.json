@@ -1,0 +1,49 @@
+{
+  "reference": "/home/disk1/xiaoyanwang/code/SAGE/results/CIFAR10/runs/rev13_trusted_lr015_bc_s7_20260914_181549_541595_a0.1",
+  "gpus": [
+    0
+  ],
+  "status": "complete",
+  "stages": {
+    "prefix": {
+      "metrics": {
+        "passed": true,
+        "start": 1,
+        "end": 225,
+        "mismatch_count": 0,
+        "first_differences": []
+      },
+      "dynamics": {
+        "passed": true,
+        "start": 1,
+        "end": 225,
+        "mismatch_count": 0,
+        "first_differences": []
+      }
+    },
+    "replay": {
+      "metrics": {
+        "passed": true,
+        "start": 226,
+        "end": 230,
+        "mismatch_count": 0,
+        "first_differences": []
+      },
+      "dynamics": {
+        "passed": true,
+        "start": 226,
+        "end": 230,
+        "mismatch_count": 0,
+        "first_differences": []
+      }
+    }
+  },
+  "prefix": "/home/disk1/xiaoyanwang/code/SAGE/results/CIFAR10/runs/bc_auto_prefix_20260915_121725_2306355_a0.1",
+  "checkpoint": "/home/disk1/xiaoyanwang/code/SAGE/results/CIFAR10/runs/bc_auto_prefix_20260915_121725_2306355_a0.1/round_0225.pt",
+  "replay": "/home/disk1/xiaoyanwang/code/SAGE/results/CIFAR10/runs/bc_auto_replay_20260915_121725_2306355_a0.1",
+  "experiments": {
+    "breliability": "/home/disk1/xiaoyanwang/code/SAGE/results/CIFAR10/runs/bc_auto_breliability_20260915_121725_2306355_a0.1",
+    "aguard": "/home/disk1/xiaoyanwang/code/SAGE/results/CIFAR10/runs/bc_auto_aguard_20260915_121725_2306355_a0.1",
+    "featurehalf": "/home/disk1/xiaoyanwang/code/SAGE/results/CIFAR10/runs/bc_auto_featurehalf_20260915_121725_2306355_a0.1"
+  }
+}

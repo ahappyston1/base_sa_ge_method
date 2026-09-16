@@ -1,5 +1,7 @@
 # SAGE
 
+独立 BC 重构实验：[BC 特征重构与原型实验设计、消融及启动说明](docs/bc_reconstruction_experiment.md)。
+
 新增实验：[REV14 可信多原型与教师训练说明](docs/trusted_multi.md)。
 三组后续实验：[原trusted延长到500轮、提前软降权与REV14启动说明](docs/trusted_followups.md)。
 启动：`bash scripts/run_experiment.sh trusted_multi_tail 0 7`（300轮主训练＋75轮独立收尾）。
