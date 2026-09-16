@@ -43,6 +43,7 @@ import time
 import json
 from trusted_geometry import refresh_reference, score_queries
 import bc_tail
+import bc_targets
 from exploration import (initialize_heads, ema as bc_ema_update, teacher_objectives,
                          ramp as exploration_ramp, prox_coefficient, proximal_loss)
 from trusted_risk import (score_a as score_a_risk, audit as audit_a_risk, GROUPS as RISK_GROUPS,
@@ -338,6 +339,7 @@ def _write_run_config(path: str, args, extra: Dict[str, Any]) -> None:
         "eta_B": float(args.eta_B),
         "run_id": extra.get("run_id"),
     }
+    cfg['bc_targets'] = getattr(args, 'bc_targets', 0)
     cfg['bc_tail'] = getattr(args, 'bc_tail', 'none')
     cfg['fork_source'] = os.path.abspath(args.resume) if getattr(args, 'bc_fork', 0) else None
     cfg['stop_after_round'] = getattr(args, 'stop_after_round', 0)
@@ -373,6 +375,8 @@ def _geometry_controls(args) -> Dict[str, Any]:
                         bc_feature_weight=args.bc_feature_weight, bc_ramp=[30,90])
     if getattr(args, 'mid_prox_mu', 0):
         controls.update(mid_prox_mu=args.mid_prox_mu, prox_version=1, prox_schedule=[30,60,200,250])
+    if getattr(args, 'bc_targets', 0):
+        controls['bc_targets'] = bc_targets.controls()
     if getattr(args, "bc_tail", "none") != "none":
         controls["bc_tail"] = bc_tail.tail_controls(args.bc_tail)
     return controls
@@ -1146,7 +1150,15 @@ class LocalPPFPSL:
         bc_gate = exploration_ramp(round_idx,30,90) if bc_enabled else 0.
         tail_mode = getattr(args, "bc_tail", "none")
         tail_gate = bc_tail.gate(round_idx) if tail_mode != "none" else 0.
-        data_client_unlabeled.second_weak = tail_gate > 0 and tail_mode in ("breliability", "aguard")
+        targets_enabled = bool(getattr(args,'bc_targets',0))
+        target_gate = bc_targets.gate(round_idx) if targets_enabled else 0.
+        history = None
+        if targets_enabled:
+            if client_state is not None and 'target_history' not in client_state:
+                raise ValueError('Target-routing resume requires complete per-client history')
+            history = bc_targets.History(data_client_unlabeled.indices,args.num_classes,self.device,
+                                         (client_state or {}).get('target_history'))
+        data_client_unlabeled.second_weak = (targets_enabled and bc_gate > 0) or (tail_gate > 0 and tail_mode in ("breliability", "aguard"))
         prox_mu = prox_coefficient(round_idx,args) if getattr(args,'mid_prox_mu',0) else 0.
         anchor = {n:p.detach().clone() for n,p in self.model.named_parameters()} if prox_mu else None
         if bc_enabled:
@@ -1397,6 +1409,17 @@ class LocalPPFPSL:
                 else:
                     zw, logw = self._forward_z_logits(uw)
 
+                target_teacher = None
+                target_result = None
+                if targets_enabled and bc_gate > 0:
+                    with torch.no_grad():
+                        zt_new,lt_new = self._forward_z_logits(uw,self.teacher)
+                        _,lt2_new = self._forward_z_logits(second_weak,self.teacher)
+                        target_scores,target_q,target_p = bc_tail.reliability(lt_new,lt2_new,args.T)
+                        hist_q,hist_mature = history.lookup(u_ids,round_idx)
+                        history.observe(u_ids,(target_q+target_p)/2)
+                    target_teacher = (zt_new,lt_new)
+
                 probs = F.softmax(logw / args.T, dim=-1)
                 s_i, yhat = probs.max(dim=-1)
 
@@ -1434,6 +1457,17 @@ class LocalPPFPSL:
                     L_A, L_B = _unlabeled_ab_losses(
                         logs, logw, yhat, in_A, in_B, w_A, wb_phase1, args.T
                     )
+                    if target_gate > 0:
+                        target_result = bc_targets.decide(yhat,in_A,in_B,target_q,target_p,target_scores,
+                            hist_q,hist_mature,zg,trusted_ref)
+                        L_A,target_lb,target_proto = bc_targets.objectives(logs,yhat,in_A,in_B,
+                            w_A,wb_phase1,target_result,target_gate)
+                        target_audit = bc_targets.audit(target_result,yhat,in_A,in_B,y_u_gt,
+                            w_A,wb_phase1,target_gate).cpu().tolist()
+                        for cls,values in enumerate(target_audit):
+                            for name,value in zip(bc_targets.FIELDS,values):
+                                key=f'target_c{cls}_{name}'
+                                log_acc[key]=log_acc.get(key,0.)+value
                     log_acc["r_mean"] += float(s_i.mean().item())
                     log_acc["m_mean"] += 0.0
                     log_acc["alpha_t"] += 1.0
@@ -1454,6 +1488,8 @@ class LocalPPFPSL:
                             gt_sel = y_u_gt[mask]
                             ids_sel = u_ids[mask]
                             wi = (s_sel ** args.w_gamma).clamp(args.w_min, 1.0)
+                            if target_result is not None:
+                                wi = wi * target_proto[mask]
                             # 写原型独立于 CE：更严筛选 / 更狠权重，默认无操作
                             wi, keep = _proto_write_weight(wi, s_sel, args)
                             if keep is not None:
@@ -1607,6 +1643,17 @@ class LocalPPFPSL:
                     L_A, L_B = _unlabeled_ab_losses(
                         logs, logw, yhat, in_A, in_B, w_full, b_score, args.T
                     )
+                    if target_gate > 0:
+                        target_result = bc_targets.decide(yhat,in_A,in_B,target_q,target_p,target_scores,
+                            hist_q,hist_mature,zg,trusted_ref)
+                        L_A,target_lb,target_proto = bc_targets.objectives(logs,yhat,in_A,in_B,
+                            w_full,b_score,target_result,target_gate)
+                        target_audit = bc_targets.audit(target_result,yhat,in_A,in_B,y_u_gt,
+                            w_full,b_score,target_gate).cpu().tolist()
+                        for cls,values in enumerate(target_audit):
+                            for name,value in zip(bc_targets.FIELDS,values):
+                                key=f'target_c{cls}_{name}'
+                                log_acc[key]=log_acc.get(key,0.)+value
                     log_acc["r_mean"] += float(r_i.mean().item())
                     log_acc["m_mean"] += float(m_i.mean().item())
                     log_acc["alpha_t"] += float(alpha_t.mean().item())
@@ -1633,6 +1680,8 @@ class LocalPPFPSL:
                             zw_a = zw[in_A]
                             cc = yhat[in_A]
                             wi = w_full[in_A]
+                            if target_result is not None:
+                                wi = wi * target_proto[in_A]
                             s_sel = s_i[in_A]
                             gt_sel = y_u_gt[in_A]
                             ids_sel = u_ids[in_A]
@@ -1672,9 +1721,9 @@ class LocalPPFPSL:
                     feature_effective = logs.new_zeros(())
                     if bc_gate > 0:
                         with torch.no_grad():
-                            zt, lt = self._forward_z_logits(uw,self.teacher)
+                            zt, lt = target_teacher if target_teacher is not None else self._forward_z_logits(uw,self.teacher)
                         bw = wb_phase1 if phase == 1 else b_score
-                        if second_weak is not None:
+                        if second_weak is not None and not targets_enabled:
                             with torch.no_grad():
                                 _, lt2 = self._forward_z_logits(second_weak, self.teacher)
                                 scores, tq, tq2 = bc_tail.reliability(lt, lt2, args.T)
@@ -1705,6 +1754,13 @@ class LocalPPFPSL:
                                     log_acc[key] = log_acc.get(key, 0.) + float(value)
                         teacher_b, feature = teacher_objectives(zs,logs,zt,lt,self.bc_heads,
                             self.bc_target,in_B,in_C,bw,args.T)
+                        if target_result is not None:
+                            teacher_b = (1-target_gate)*teacher_b + target_gate*target_lb
+                            # A samples released from a hard answer keep a gradual feature objective.
+                            extra_a = target_result['a_changed']
+                            _,extra_feature = teacher_objectives(zs,logs,zt,lt,self.bc_heads,
+                                self.bc_target,extra_a,torch.zeros_like(in_C),torch.zeros_like(bw),args.T)
+                            feature = feature + target_gate*extra_feature
                         old_b = L_B
                         L_B = (1-bc_gate)*old_b + bc_gate*teacher_b
                         bcoef = args.lambda_B*lambda_B_scale*(aux_scale if phase==1 else 1.)
@@ -1873,6 +1929,9 @@ class LocalPPFPSL:
         }
         if bc_enabled:
             new_state['bc_heads'] = {k:v.detach().cpu().clone() for k,v in self.bc_heads.state_dict().items()}
+
+        if history is not None:
+            new_state['target_history'] = history.finish(round_idx)
 
         return copy.deepcopy(self.model.state_dict()), new_state, proto_upload
 
