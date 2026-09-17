@@ -1,0 +1,23 @@
+nohup: ignoring input
+STATUS failed: /home/disk1/xiaoyanwang/code/SAGE/results/bc_tail_launches/20260915_121551_2304466/status.json
+No module named 'torchvision'
+nohup: ignoring input
+STATUS training_prefix: /home/disk1/xiaoyanwang/code/SAGE/results/bc_tail_launches/20260915_121725_2306355/status.json
+START prefix: GPU=0 PID=2306523 log=/home/disk1/xiaoyanwang/code/SAGE/results/bc_tail_launches/20260915_121725_2306355/prefix.log
+nohup: ignoring input
+STATUS training_prefix: /home/disk1/xiaoyanwang/code/SAGE/results/bc_tail_launches/20260915_121745_2306967/status.json
+START prefix: GPU=0 PID=2308358 log=/home/disk1/xiaoyanwang/code/SAGE/results/bc_tail_launches/20260915_121745_2306967/prefix.log
+END prefix: exit=0
+STATUS checking_prefix: /home/disk1/xiaoyanwang/code/SAGE/results/bc_tail_launches/20260915_121725_2306355/status.json
+STATUS training_replay: /home/disk1/xiaoyanwang/code/SAGE/results/bc_tail_launches/20260915_121725_2306355/status.json
+START replay: GPU=0 PID=2904867 log=/home/disk1/xiaoyanwang/code/SAGE/results/bc_tail_launches/20260915_121725_2306355/replay.log
+END replay: exit=0
+STATUS checking_replay: /home/disk1/xiaoyanwang/code/SAGE/results/bc_tail_launches/20260915_121725_2306355/status.json
+STATUS training_tails: /home/disk1/xiaoyanwang/code/SAGE/results/bc_tail_launches/20260915_121725_2306355/status.json
+START breliability: GPU=0 PID=2916576 log=/home/disk1/xiaoyanwang/code/SAGE/results/bc_tail_launches/20260915_121725_2306355/breliability.log
+END breliability: exit=0
+START aguard: GPU=0 PID=3100627 log=/home/disk1/xiaoyanwang/code/SAGE/results/bc_tail_launches/20260915_121725_2306355/aguard.log
+END aguard: exit=0
+START featurehalf: GPU=0 PID=3284028 log=/home/disk1/xiaoyanwang/code/SAGE/results/bc_tail_launches/20260915_121725_2306355/featurehalf.log
+END featurehalf: exit=0
+STATUS complete: /home/disk1/xiaoyanwang/code/SAGE/results/bc_tail_launches/20260915_121725_2306355/status.json
