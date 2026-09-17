@@ -265,6 +265,7 @@ def args_parser():
     parser.add_argument('--bc_ema', type=float, default=.99)
     parser.add_argument('--bc_feature_weight', type=float, default=.10)
     parser.add_argument('--bc_targets', type=int, choices=(0,1), default=0)
+    parser.add_argument('--target_experiment', choices=('none','evidence','labelhead','separation'), default='none')
     parser.add_argument('--bc_tail', choices=('none','breliability','aguard','featurehalf'), default='none')
     parser.add_argument('--bc_fork', type=int, choices=(0,1), default=0,
                         help='Explicitly fork complete baseline BC round225 state into a new run')
@@ -298,6 +299,10 @@ def args_parser():
         raise FileNotFoundError(f'--config 指定的 YAML 不存在: {yp}')
 
     args = parser.parse_args()
+    if args.target_experiment not in ('none','evidence','labelhead','separation'):
+        parser.error('Unknown target_experiment')
+    if args.target_experiment != 'none' and not args.bc_targets:
+        parser.error('target_experiment requires bc_targets=1')
     if args.bc_targets:
         if not args.bc_teacher or args.bc_tail != 'none' or args.bc_fork:
             parser.error('BC targets requires baseline BC without tail/fork')

@@ -110,6 +110,21 @@ def dynamics_row(round_idx, phase, logs, args):
                 key=f'target_c{cls}_{name}'
                 row[key]=total(key)
     row["loss_observed"] = sum(float(x["loss"]) * float(x["n_batches"]) for x in logs) / max(steps, 1)
+    if getattr(args, 'target_experiment', 'none') != 'none':
+        from target_experiments import AUDIT_FIELDS
+        for cls in range(args.num_classes):
+            for name in AUDIT_FIELDS:
+                key = f'experiment_c{cls}_{name}'
+                row[key] = total(key)
+            for truth_cls in range(args.num_classes):
+                key = f'experiment_a_pred{cls}_true{truth_cls}'
+                row[key] = total(key)
+        if args.target_experiment == 'separation':
+            key = 'L_separation_effective'
+            row[key] = sum(float(x.get(key,0))*float(x['n_batches']) for x in logs)/max(steps,1)
+            row['loss_reconstructed'] += row[key]
+            row['separation_active_batches'] = total('separation_active_batches')
+            row['separation_unique_labeled'] = total('separation_unique_labeled')
     row["u_visits"] = int(n)
     row["local_steps"] = int(steps)
     row["trust_authority_mean"] = total("trust_authority_sum") / max(n, 1)

@@ -149,6 +149,9 @@ class Indices2Dataset_labeled(Dataset):
 
     def __getitem__(self, idx):
         image, label = self.client_dataset[idx]
+        if getattr(self, 'paired_labeled', False):
+            return (self.label_trans(image), label, self.label_trans(image),
+                    int(self.indices[idx % self.client_dataset_original_len]))
         image = self.label_trans(image)
         return image, label
 

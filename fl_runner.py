@@ -44,6 +44,7 @@ import json
 from trusted_geometry import refresh_reference, score_queries
 import bc_tail
 import bc_targets
+import target_experiments
 from exploration import (initialize_heads, ema as bc_ema_update, teacher_objectives,
                          ramp as exploration_ramp, prox_coefficient, proximal_loss)
 from trusted_risk import (score_a as score_a_risk, audit as audit_a_risk, GROUPS as RISK_GROUPS,
@@ -340,6 +341,7 @@ def _write_run_config(path: str, args, extra: Dict[str, Any]) -> None:
         "run_id": extra.get("run_id"),
     }
     cfg['bc_targets'] = getattr(args, 'bc_targets', 0)
+    cfg['target_experiment'] = getattr(args, 'target_experiment', 'none')
     cfg['bc_tail'] = getattr(args, 'bc_tail', 'none')
     cfg['fork_source'] = os.path.abspath(args.resume) if getattr(args, 'bc_fork', 0) else None
     cfg['stop_after_round'] = getattr(args, 'stop_after_round', 0)
@@ -377,6 +379,8 @@ def _geometry_controls(args) -> Dict[str, Any]:
         controls.update(mid_prox_mu=args.mid_prox_mu, prox_version=1, prox_schedule=[30,60,200,250])
     if getattr(args, 'bc_targets', 0):
         controls['bc_targets'] = bc_targets.controls()
+    if getattr(args, 'target_experiment', 'none') != 'none':
+        controls['target_experiment'] = target_experiments.controls(args.target_experiment)
     if getattr(args, "bc_tail", "none") != "none":
         controls["bc_tail"] = bc_tail.tail_controls(args.bc_tail)
     return controls
@@ -1127,6 +1131,7 @@ class LocalPPFPSL:
         client_state: Optional[Dict[str, Any]],
         labeled_counts: torch.Tensor,
         sched: Optional[Dict[str, Any]] = None,
+        auxiliary_head: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any], Dict[str, torch.Tensor]]:
         """单客户端、单通信轮本地训练。返回: (state_dict, new_client_state, proto_upload)"""
         
@@ -1152,6 +1157,23 @@ class LocalPPFPSL:
         tail_gate = bc_tail.gate(round_idx) if tail_mode != "none" else 0.
         targets_enabled = bool(getattr(args,'bc_targets',0))
         target_gate = bc_targets.gate(round_idx) if targets_enabled else 0.
+        target_mode = getattr(args, 'target_experiment', 'none')
+        # Prototype initialization expects the original single labeled view.
+        data_client_labeled.paired_labeled = False
+        aux_history = None
+        if target_mode == 'labelhead':
+            if client_state is not None and 'aux_history' not in client_state:
+                raise ValueError('labelhead resume requires complete auxiliary history')
+            aux_history = bc_targets.History(data_client_unlabeled.indices, args.num_classes, self.device,
+                                            (client_state or {}).get('aux_history'))
+            if bc_gate > 0:
+                if auxiliary_head is None:
+                    raise ValueError('labelhead requires current online labeled head')
+                self.aux_encoder = copy.deepcopy(self.model)
+                # This project's ResNet.train/eval overrides return None.
+                self.aux_encoder.eval()
+                for parameter in self.aux_encoder.parameters():
+                    parameter.requires_grad_(False)
         history = None
         if targets_enabled:
             if client_state is not None and 'target_history' not in client_state:
@@ -1198,6 +1220,7 @@ class LocalPPFPSL:
             )
             inited = True
 
+        data_client_labeled.paired_labeled = target_mode == 'separation' and target_gate > 0
         if sched is None:
             phase = training_phase(round_idx, schedule_rounds(args), args)
             g_gate = gate_anneal(round_idx, schedule_rounds(args), args)
@@ -1360,10 +1383,11 @@ class LocalPPFPSL:
                 log_acc["trust_class_sum"] = log_acc.get("trust_class_sum", 0.0) + float(trusted_ref["trust"].sum())
             for _step in range(local_iter):
                 try:
-                    x, y = next(it_l)
+                    labeled_batch = next(it_l)
                 except StopIteration:
                     it_l = iter(lab_loader)
-                    x, y = next(it_l)
+                    labeled_batch = next(it_l)
+                x, y = labeled_batch[:2]
                 try:
                     u_batch = next(it_u)
                 except StopIteration:
@@ -1411,6 +1435,7 @@ class LocalPPFPSL:
 
                 target_teacher = None
                 target_result = None
+                auxiliary_prediction = None
                 if targets_enabled and bc_gate > 0:
                     with torch.no_grad():
                         zt_new,lt_new = self._forward_z_logits(uw,self.teacher)
@@ -1418,6 +1443,16 @@ class LocalPPFPSL:
                         target_scores,target_q,target_p = bc_tail.reliability(lt_new,lt2_new,args.T)
                         hist_q,hist_mature = history.lookup(u_ids,round_idx)
                         history.observe(u_ids,(target_q+target_p)/2)
+                        if aux_history is not None:
+                            az1, _ = self._forward_z_logits(uw, self.aux_encoder)
+                            az2, _ = self._forward_z_logits(second_weak, self.aux_encoder)
+                            aq1, ag1 = target_experiments.predict_head(az1, auxiliary_head)
+                            aq2, ag2 = target_experiments.predict_head(az2, auxiliary_head)
+                            ah, am = aux_history.lookup(u_ids, round_idx)
+                            aq = (aq1+aq2)/2
+                            ag = ag1 & ag2 & (aq1.argmax(-1) == aq2.argmax(-1))
+                            auxiliary_prediction = (aq, ag, ah, am, auxiliary_head['valid'].to(self.device))
+                            aux_history.observe(u_ids, aq)
                     target_teacher = (zt_new,lt_new)
 
                 probs = F.softmax(logw / args.T, dim=-1)
@@ -1460,6 +1495,9 @@ class LocalPPFPSL:
                     if target_gate > 0:
                         target_result = bc_targets.decide(yhat,in_A,in_B,target_q,target_p,target_scores,
                             hist_q,hist_mature,zg,trusted_ref)
+                        if target_mode != 'none':
+                            target_result = target_experiments.revise(target_result,target_mode,yhat,in_A,
+                                target_q,target_p,hist_q,hist_mature,zg,trusted_ref,auxiliary_prediction)
                         L_A,target_lb,target_proto = bc_targets.objectives(logs,yhat,in_A,in_B,
                             w_A,wb_phase1,target_result,target_gate)
                         target_audit = bc_targets.audit(target_result,yhat,in_A,in_B,y_u_gt,
@@ -1646,6 +1684,9 @@ class LocalPPFPSL:
                     if target_gate > 0:
                         target_result = bc_targets.decide(yhat,in_A,in_B,target_q,target_p,target_scores,
                             hist_q,hist_mature,zg,trusted_ref)
+                        if target_mode != 'none':
+                            target_result = target_experiments.revise(target_result,target_mode,yhat,in_A,
+                                target_q,target_p,hist_q,hist_mature,zg,trusted_ref,auxiliary_prediction)
                         L_A,target_lb,target_proto = bc_targets.objectives(logs,yhat,in_A,in_B,
                             w_full,b_score,target_result,target_gate)
                         target_audit = bc_targets.audit(target_result,yhat,in_A,in_B,y_u_gt,
@@ -1778,6 +1819,35 @@ class LocalPPFPSL:
                                 log_acc[key] = log_acc.get(key, 0.) + float(value)
                         log_acc['bc_feature_std'] = log_acc.get('bc_feature_std',0.) + float(zs.detach().std(dim=0,unbiased=False).mean())
                     log_acc['L_feature_effective'] = log_acc.get('L_feature_effective',0.) + float(feature_effective.detach())
+                if target_mode == 'separation':
+                    separation_effective = logs.new_zeros(())
+                    if target_gate > 0:
+                        # Extra labeled view must not alter the model/teacher BN buffers.
+                        with target_experiments.no_bn_updates(self.model):
+                            z_second, _ = self._forward_z_logits(labeled_batch[2].to(self.device))
+                        separation = target_experiments.separation_loss(z_x,z_second,y,
+                            labeled_batch[3].to(self.device),logits_x)
+                        separation_effective = .03*target_gate*separation
+                        loss = loss + separation_effective
+                        log_acc['separation_active_batches'] = log_acc.get('separation_active_batches',0) + int(y.unique().numel() >= 2)
+                        log_acc['separation_unique_labeled'] = log_acc.get('separation_unique_labeled',0) + int(labeled_batch[3].unique().numel())
+                    log_acc['L_separation_effective'] = log_acc.get('L_separation_effective',0.) + float(separation_effective.detach())
+                if target_mode != 'none':
+                    # Read-only counts; never consumed by routing or training schedules.
+                    with torch.no_grad():
+                        cm = torch.bincount(yhat[in_A]*args.num_classes+y_u_gt[in_A],
+                                            minlength=args.num_classes**2).view(args.num_classes,args.num_classes)
+                        for cls, values in enumerate(cm.cpu().tolist()):
+                            for truth_cls, value in enumerate(values):
+                                key = f'experiment_a_pred{cls}_true{truth_cls}'
+                                log_acc[key] = log_acc.get(key,0.)+value
+                        if target_result is not None:
+                            audit_weights = w_A if phase == 1 else w_full
+                            extra_audit = target_experiments.audit(target_result,yhat,in_A,y_u_gt,audit_weights)
+                            for cls, values in enumerate(extra_audit.cpu().tolist()):
+                                for name, value in zip(target_experiments.AUDIT_FIELDS,values):
+                                    key = f'experiment_c{cls}_{name}'
+                                    log_acc[key] = log_acc.get(key,0.)+value
                 if getattr(args,'mid_prox_mu',0):
                     prox = proximal_loss(self.model,anchor,prox_mu) if prox_mu else logs.new_zeros(())
                     loss = loss + prox
@@ -1878,7 +1948,7 @@ class LocalPPFPSL:
 
         log_final = {}
         for k, v in log_acc.items():
-            if k in ("loss", "L_sup", "L_A", "L_B", "L_proto", "r_mean", "m_mean", "alpha_t", "L_feature_effective", "L_prox_effective", "bc_feature_std"):
+            if k in ("loss", "L_sup", "L_A", "L_B", "L_proto", "r_mean", "m_mean", "alpha_t", "L_feature_effective", "L_prox_effective", "L_separation_effective", "bc_feature_std"):
                 log_final[k] = v / max(1, log_acc["n_batches"])
             elif k in (
                 "lr",
@@ -1932,6 +2002,8 @@ class LocalPPFPSL:
 
         if history is not None:
             new_state['target_history'] = history.finish(round_idx)
+        if aux_history is not None:
+            new_state['aux_history'] = aux_history.finish(round_idx)
 
         return copy.deepcopy(self.model.state_dict()), new_state, proto_upload
 
@@ -2287,6 +2359,13 @@ def fixmatch(alpha):
         dict_global_params = global_model.download_params()
 
         online_clients = random_state.choice(total_clients, args.num_online_clients, replace=False)
+        auxiliary_head = None
+        if getattr(args, 'target_experiment', 'none') == 'labelhead' and r > 30:
+            auxiliary_head = target_experiments.fit_online_head(global_model.model, data_local_training,
+                [list_client2indices_labeled[int(c)] for c in online_clients], args.num_classes,
+                to_tensor_normalize(args.dataset), next(global_model.model.parameters()).device)
+            head_path = os.path.join(paths['run_dir'], 'labelhead_calibration.csv')
+            target_experiments.write_head_audit(head_path, r, auxiliary_head)
         list_dicts_local_params = []
         list_nums_local_data = []
         proto_uploads = []
@@ -2312,6 +2391,7 @@ def fixmatch(alpha):
                 client_states[client],
                 lc,                   
                 snap,
+                auxiliary_head=auxiliary_head,
             )
             trust_rows = st_new.pop("trust_rows", [])
             for state_key, filename in [('risk_rows', 'risk_audit.csv'),
@@ -2523,6 +2603,9 @@ def fixmatch(alpha):
             'run_identity': bc_tail.run_identity(args),
             'fork_source': paths['resume_src'] if getattr(args, 'bc_fork', 0) else None,
         }
+        if getattr(args, 'target_experiment', 'none') == 'labelhead':
+            # Audit snapshot; next round refits in the new global feature space.
+            checkpoint_state['auxiliary_head'] = auxiliary_head
         temporary = ckpt_path + '.tmp'
         torch.save(checkpoint_state, temporary)
         os.replace(temporary, ckpt_path)

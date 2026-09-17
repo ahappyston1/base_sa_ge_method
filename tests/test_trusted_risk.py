@@ -104,9 +104,18 @@ def run_local(phase, enabled, frozen=False, flip_hidden_labels=False, experiment
     r=round_idx if round_idx is not None else (45 if phase==1 else 150)
     snap=AdaptiveSchedule(args,300).for_round(r);snap['phase']=phase;snap['aux_scale']=1.
     context=patch.object(local.optimizer,'step',return_value=None) if frozen else nullcontext()
+    extra = {}
+    if getattr(args, 'target_experiment', 'none') == 'labelhead' and r > 30:
+        import target_experiments
+        from Dataset.normalize import to_tensor_normalize
+        encoder = copy.deepcopy(local.model)
+        if global_weights is not None:
+            encoder.load_state_dict(global_weights)
+        extra['auxiliary_head'] = target_experiments.fit_online_head(encoder,data,[list(range(16))],10,
+                                           to_tensor_normalize('CIFAR10'),torch.device('cpu'))
     with context:
         return local.train_round(args,ld,ud,copy.deepcopy(global_weights if global_weights is not None else local.model.state_dict()),torch.zeros(10,8),
-                torch.zeros(10,dtype=torch.bool),r,copy.deepcopy(saved_state),torch.tensor([8,8]+[0]*8),snap)
+                torch.zeros(10,dtype=torch.bool),r,copy.deepcopy(saved_state),torch.tensor([8,8]+[0]*8),snap,**extra)
 
 
 def test_same_inputs_keep_b_and_proto_objectives_and_routes():
