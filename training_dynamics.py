@@ -18,7 +18,7 @@ def trusted_weight_gate(round_idx, standard_gate, args):
 
 
 def lr_controls(args):
-    return {
+    controls = {
         "initial": float(args.lr_local_training),
         "minimum": float(getattr(args, "lr_min", 1e-4)),
         "rounds": schedule_rounds(args),
@@ -26,6 +26,33 @@ def lr_controls(args):
         "mid_end": int(getattr(args, "lr_mid_end", 90)),
         "mid_factor": float(getattr(args, "lr_mid_factor", 1.0)),
     }
+    mode = getattr(args, 'lr_schedule', 'cosine')
+    if mode == 'constant015':
+        return dict(schedule=mode,version=1,initial=.15,minimum=.15,rounds=schedule_rounds(args))
+    if mode != 'cosine':
+        controls = dict(schedule=mode, version=1, initial=.15, rounds=schedule_rounds(args),
+                        switch_round=201, plateau=.05, minimum=.05 if mode=='step200' else .001)
+        if mode == 'step200_tail':
+            controls.update(tail_start=270,tail_end=300,tail_min=.001)
+    return controls
+
+
+def training_learning_rate(round_idx, args):
+    mode = getattr(args, 'lr_schedule', 'cosine')
+    if mode == 'constant015':
+        return .15
+    if mode == 'cosine':
+        return cosine_learning_rate(round_idx,args.lr_local_training,schedule_rounds(args),
+            getattr(args,'lr_min',1e-4),getattr(args,'lr_mid_start',60),
+            getattr(args,'lr_mid_end',90),getattr(args,'lr_mid_factor',1.))
+    if mode not in ('step200','step200_tail'):
+        raise ValueError('Unknown learning-rate schedule')
+    if round_idx <= 200:
+        return .15
+    if mode == 'step200' or round_idx <= 270:
+        return .05
+    progress = min(1.,max(0.,(round_idx-270)/30.))
+    return .001 + .5*(.05-.001)*(1+math.cos(math.pi*progress))
 
 
 def cosine_learning_rate(round_idx, initial, rounds, minimum=1e-4,
@@ -126,6 +153,10 @@ def dynamics_row(round_idx, phase, logs, args):
             row['separation_active_batches'] = total('separation_active_batches')
             row['separation_unique_labeled'] = total('separation_unique_labeled')
     row["u_visits"] = int(n)
+    if getattr(args, 'labelhead_guard', 0):
+        from target_experiments import GUARD_FIELDS
+        for key in GUARD_FIELDS:
+            row[key] = total(key)
     row["local_steps"] = int(steps)
     row["trust_authority_mean"] = total("trust_authority_sum") / max(n, 1)
     row["trust_valid_fraction"] = total("trust_valid_visits") / max(n, 1)

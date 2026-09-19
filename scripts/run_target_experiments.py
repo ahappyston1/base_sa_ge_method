@@ -16,7 +16,7 @@ import threading
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MODES = ('evidence', 'labelhead', 'separation')
+MODES = ('evidence', 'labelhead', 'separation', 'labelhead_constant', 'labelhead_step', 'labelhead_step_tail', 'labelhead_guard')
 
 
 def command(mode, gpu, run_id):
@@ -58,7 +58,7 @@ def run_queue(gpus, jobs, launch):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--gpus', type=int, nargs='+', required=True)
-    parser.add_argument('--experiments', choices=MODES, nargs='+', default=list(MODES))
+    parser.add_argument('--experiments', choices=MODES, nargs='+', default=['evidence','labelhead','separation'])
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
     if any(g < 0 for g in args.gpus) or len(set(args.gpus)) != len(args.gpus):

@@ -196,7 +196,7 @@ def test_queue_limits_per_gpu_and_failure_stops_pending():
     assert failed and len(results)==1
 
 
-@pytest.mark.parametrize('mode',['evidence','labelhead','separation'])
+@pytest.mark.parametrize('mode',['evidence','labelhead','separation','labelhead_constant','labelhead_step','labelhead_step_tail','labelhead_guard'])
 def test_real_resnet_training_path(mode):
     from fl_runner import LocalPPFPSL,AdaptiveSchedule
     from Model.resnet import ResNet
@@ -213,7 +213,7 @@ def test_real_resnet_training_path(mode):
     ld=Indices2Dataset_labeled(data);ld.load(list(range(8)))
     ud=Indices2Dataset_unlabeled_fixmatch(data);ud.load(list(range(16)))
     head=None
-    if mode=='labelhead':
+    if args.target_experiment=='labelhead':
         head=te.fit_online_head(local.model,data,[list(range(8))],10,to_tensor_normalize('CIFAR10'),'cpu')
     initial=copy.deepcopy(local.model.state_dict())
     snap=AdaptiveSchedule(args,300).for_round(150);snap['phase']=3

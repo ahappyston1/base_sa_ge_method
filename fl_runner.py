@@ -49,7 +49,7 @@ from exploration import (initialize_heads, ema as bc_ema_update, teacher_objecti
                          ramp as exploration_ramp, prox_coefficient, proximal_loss)
 from trusted_risk import (score_a as score_a_risk, audit as audit_a_risk, GROUPS as RISK_GROUPS,
                           new_audit as new_risk_audit, audit_rows as risk_audit_rows)
-from training_dynamics import cosine_learning_rate, dynamics_row, lr_controls, schedule_rounds, trusted_weight_gate
+from training_dynamics import cosine_learning_rate, training_learning_rate, dynamics_row, lr_controls, schedule_rounds, trusted_weight_gate
 from update_diagnostics import update_rows, save_update_snapshot
 from geometry_audit import accumulate as audit_accumulate, new_buffer as audit_buffer, append_rows as audit_append
 
@@ -342,6 +342,7 @@ def _write_run_config(path: str, args, extra: Dict[str, Any]) -> None:
     }
     cfg['bc_targets'] = getattr(args, 'bc_targets', 0)
     cfg['target_experiment'] = getattr(args, 'target_experiment', 'none')
+    cfg['labelhead_guard'] = getattr(args, 'labelhead_guard', 0)
     cfg['bc_tail'] = getattr(args, 'bc_tail', 'none')
     cfg['fork_source'] = os.path.abspath(args.resume) if getattr(args, 'bc_fork', 0) else None
     cfg['stop_after_round'] = getattr(args, 'stop_after_round', 0)
@@ -381,6 +382,8 @@ def _geometry_controls(args) -> Dict[str, Any]:
         controls['bc_targets'] = bc_targets.controls()
     if getattr(args, 'target_experiment', 'none') != 'none':
         controls['target_experiment'] = target_experiments.controls(args.target_experiment)
+    if getattr(args, 'labelhead_guard', 0):
+        controls['labelhead_guard'] = target_experiments.guard_controls()
     if getattr(args, "bc_tail", "none") != "none":
         controls["bc_tail"] = bc_tail.tail_controls(args.bc_tail)
     return controls
@@ -1200,12 +1203,7 @@ class LocalPPFPSL:
             self.teacher.load_state_dict(global_params)
             self.teacher.eval()
 
-        cosine_lr = cosine_learning_rate(
-            round_idx, args.lr_local_training, schedule_rounds(args),
-            float(getattr(args, "lr_min", 1e-4)),
-            int(getattr(args, "lr_mid_start", 60)), int(getattr(args, "lr_mid_end", 90)),
-            float(getattr(args, "lr_mid_factor", 1.0)),
-        )
+        cosine_lr = training_learning_rate(round_idx, args)
         for pg in self.optimizer.param_groups:
             pg['lr'] = cosine_lr
 
@@ -1497,7 +1495,8 @@ class LocalPPFPSL:
                             hist_q,hist_mature,zg,trusted_ref)
                         if target_mode != 'none':
                             target_result = target_experiments.revise(target_result,target_mode,yhat,in_A,
-                                target_q,target_p,hist_q,hist_mature,zg,trusted_ref,auxiliary_prediction)
+                                target_q,target_p,hist_q,hist_mature,zg,trusted_ref,auxiliary_prediction,
+                                guard=bool(getattr(args,'labelhead_guard',0)))
                         L_A,target_lb,target_proto = bc_targets.objectives(logs,yhat,in_A,in_B,
                             w_A,wb_phase1,target_result,target_gate)
                         target_audit = bc_targets.audit(target_result,yhat,in_A,in_B,y_u_gt,
@@ -1686,7 +1685,8 @@ class LocalPPFPSL:
                             hist_q,hist_mature,zg,trusted_ref)
                         if target_mode != 'none':
                             target_result = target_experiments.revise(target_result,target_mode,yhat,in_A,
-                                target_q,target_p,hist_q,hist_mature,zg,trusted_ref,auxiliary_prediction)
+                                target_q,target_p,hist_q,hist_mature,zg,trusted_ref,auxiliary_prediction,
+                                guard=bool(getattr(args,'labelhead_guard',0)))
                         L_A,target_lb,target_proto = bc_targets.objectives(logs,yhat,in_A,in_B,
                             w_full,b_score,target_result,target_gate)
                         target_audit = bc_targets.audit(target_result,yhat,in_A,in_B,y_u_gt,
@@ -1798,7 +1798,7 @@ class LocalPPFPSL:
                         if target_result is not None:
                             teacher_b = (1-target_gate)*teacher_b + target_gate*target_lb
                             # A samples released from a hard answer keep a gradual feature objective.
-                            extra_a = target_result['a_changed']
+                            extra_a = target_result.get('feature_a',target_result['a_changed'])
                             _,extra_feature = teacher_objectives(zs,logs,zt,lt,self.bc_heads,
                                 self.bc_target,extra_a,torch.zeros_like(in_C),torch.zeros_like(bw),args.T)
                             feature = feature + target_gate*extra_feature
@@ -1844,6 +1844,9 @@ class LocalPPFPSL:
                         if target_result is not None:
                             audit_weights = w_A if phase == 1 else w_full
                             extra_audit = target_experiments.audit(target_result,yhat,in_A,y_u_gt,audit_weights)
+                            if getattr(args,'labelhead_guard',0):
+                                for key,value in target_experiments.guard_audit(target_result,yhat,y_u_gt,audit_weights,target_gate).items():
+                                    log_acc[key] = log_acc.get(key,0.)+value
                             for cls, values in enumerate(extra_audit.cpu().tolist()):
                                 for name, value in zip(target_experiments.AUDIT_FIELDS,values):
                                     key = f'experiment_c{cls}_{name}'

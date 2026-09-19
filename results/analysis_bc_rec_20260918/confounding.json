@@ -1,0 +1,986 @@
+{
+  "audit": {
+    "middle": {
+      "cross_view": {
+        "class_conf": {
+          "pair_weighted_auc": 0.4452731915680779,
+          "macro_auc": 0.49199241328760257,
+          "visit_weighted_auc": 0.46570895261279505,
+          "paired_groups": 20,
+          "groups_below_half": 11,
+          "eligible_visits": 13964780.0
+        },
+        "client_class_conf": {
+          "pair_weighted_auc": 0.3156335420587742,
+          "macro_auc": 0.4411852285294037,
+          "visit_weighted_auc": 0.45337689095591116,
+          "paired_groups": 366,
+          "groups_below_half": 225,
+          "eligible_visits": 13954369.0
+        },
+        "round_client_class_conf": {
+          "pair_weighted_auc": 0.3091597707605524,
+          "macro_auc": 0.42590947672907714,
+          "visit_weighted_auc": 0.43432894442056386,
+          "paired_groups": 14939,
+          "groups_below_half": 9875,
+          "eligible_visits": 13329854.0
+        }
+      },
+      "teacher_self": {
+        "class_conf": {
+          "pair_weighted_auc": 0.4439752946032554,
+          "macro_auc": 0.49545344189142504,
+          "visit_weighted_auc": 0.4652423419000276,
+          "paired_groups": 20,
+          "groups_below_half": 10,
+          "eligible_visits": 13964780.0
+        },
+        "client_class_conf": {
+          "pair_weighted_auc": 0.28608649104785017,
+          "macro_auc": 0.4228671837644303,
+          "visit_weighted_auc": 0.43063689635632074,
+          "paired_groups": 366,
+          "groups_below_half": 235,
+          "eligible_visits": 13954369.0
+        },
+        "round_client_class_conf": {
+          "pair_weighted_auc": 0.2737851280151689,
+          "macro_auc": 0.4036774424066028,
+          "visit_weighted_auc": 0.4060094828414766,
+          "paired_groups": 14939,
+          "groups_below_half": 10201,
+          "eligible_visits": 13329854.0
+        }
+      }
+    },
+    "late": {
+      "cross_view": {
+        "class_conf": {
+          "pair_weighted_auc": 0.5358023772972782,
+          "macro_auc": 0.5588809101367989,
+          "visit_weighted_auc": 0.5441716713636999,
+          "paired_groups": 20,
+          "groups_below_half": 3,
+          "eligible_visits": 14045604.0
+        },
+        "client_class_conf": {
+          "pair_weighted_auc": 0.38559431030502417,
+          "macro_auc": 0.4830326285274105,
+          "visit_weighted_auc": 0.5185334089853421,
+          "paired_groups": 365,
+          "groups_below_half": 189,
+          "eligible_visits": 14001398.0
+        },
+        "round_client_class_conf": {
+          "pair_weighted_auc": 0.3827426611970037,
+          "macro_auc": 0.4846798663904507,
+          "visit_weighted_auc": 0.5120127008822959,
+          "paired_groups": 13855,
+          "groups_below_half": 7065,
+          "eligible_visits": 13421227.0
+        }
+      },
+      "teacher_self": {
+        "class_conf": {
+          "pair_weighted_auc": 0.5491949854362298,
+          "macro_auc": 0.5697012868435716,
+          "visit_weighted_auc": 0.5547033412181916,
+          "paired_groups": 20,
+          "groups_below_half": 3,
+          "eligible_visits": 14045604.0
+        },
+        "client_class_conf": {
+          "pair_weighted_auc": 0.3616705927474574,
+          "macro_auc": 0.45742733413515985,
+          "visit_weighted_auc": 0.4935682031050317,
+          "paired_groups": 365,
+          "groups_below_half": 208,
+          "eligible_visits": 14001398.0
+        },
+        "round_client_class_conf": {
+          "pair_weighted_auc": 0.35116302060095644,
+          "macro_auc": 0.45741070655266064,
+          "visit_weighted_auc": 0.48239417126280265,
+          "paired_groups": 13855,
+          "groups_below_half": 7834,
+          "eligible_visits": 13421227.0
+        }
+      }
+    },
+    "tail30": {
+      "cross_view": {
+        "class_conf": {
+          "pair_weighted_auc": 0.6028993733063656,
+          "macro_auc": 0.607077237262929,
+          "visit_weighted_auc": 0.6123175365540305,
+          "paired_groups": 20,
+          "groups_below_half": 0,
+          "eligible_visits": 4270157.0
+        },
+        "client_class_conf": {
+          "pair_weighted_auc": 0.48434089780769957,
+          "macro_auc": 0.5114926899545343,
+          "visit_weighted_auc": 0.5554822441581284,
+          "paired_groups": 362,
+          "groups_below_half": 151,
+          "eligible_visits": 4185044.0
+        },
+        "round_client_class_conf": {
+          "pair_weighted_auc": 0.4816645136195533,
+          "macro_auc": 0.5146962790911932,
+          "visit_weighted_auc": 0.5536273026284302,
+          "paired_groups": 4158,
+          "groups_below_half": 1793,
+          "eligible_visits": 4081228.0
+        },
+        "by_class": {
+          "0": {
+            "pair_weighted_auc": 0.5364598745640956,
+            "macro_auc": 0.5448858440642554,
+            "visit_weighted_auc": 0.5558379152031095,
+            "paired_groups": 36,
+            "groups_below_half": 14,
+            "eligible_visits": 441819.0
+          },
+          "1": {
+            "pair_weighted_auc": 0.395418191711806,
+            "macro_auc": 0.48631561430992715,
+            "visit_weighted_auc": 0.5442997420346336,
+            "paired_groups": 36,
+            "groups_below_half": 19,
+            "eligible_visits": 423607.0
+          },
+          "2": {
+            "pair_weighted_auc": 0.4925661453702448,
+            "macro_auc": 0.4992753421678559,
+            "visit_weighted_auc": 0.5293100628706588,
+            "paired_groups": 37,
+            "groups_below_half": 17,
+            "eligible_visits": 360957.0
+          },
+          "3": {
+            "pair_weighted_auc": 0.4416465827699655,
+            "macro_auc": 0.5042780880142622,
+            "visit_weighted_auc": 0.5058618782226553,
+            "paired_groups": 40,
+            "groups_below_half": 14,
+            "eligible_visits": 378032.0
+          },
+          "4": {
+            "pair_weighted_auc": 0.5086580266769256,
+            "macro_auc": 0.4780296771198854,
+            "visit_weighted_auc": 0.5213230195218076,
+            "paired_groups": 38,
+            "groups_below_half": 15,
+            "eligible_visits": 408409.0
+          },
+          "5": {
+            "pair_weighted_auc": 0.4311148527637864,
+            "macro_auc": 0.48686070697817185,
+            "visit_weighted_auc": 0.5076541532936276,
+            "paired_groups": 34,
+            "groups_below_half": 17,
+            "eligible_visits": 366945.0
+          },
+          "6": {
+            "pair_weighted_auc": 0.5078424884771673,
+            "macro_auc": 0.5632394702502697,
+            "visit_weighted_auc": 0.5961756971547442,
+            "paired_groups": 40,
+            "groups_below_half": 12,
+            "eligible_visits": 417204.0
+          },
+          "7": {
+            "pair_weighted_auc": 0.5333942581525836,
+            "macro_auc": 0.5248224406511851,
+            "visit_weighted_auc": 0.5752591699107225,
+            "paired_groups": 36,
+            "groups_below_half": 15,
+            "eligible_visits": 420823.0
+          },
+          "8": {
+            "pair_weighted_auc": 0.5569790698238245,
+            "macro_auc": 0.5471096950398786,
+            "visit_weighted_auc": 0.6194298123199555,
+            "paired_groups": 33,
+            "groups_below_half": 11,
+            "eligible_visits": 479222.0
+          },
+          "9": {
+            "pair_weighted_auc": 0.46848405631502615,
+            "macro_auc": 0.47489349074083625,
+            "visit_weighted_auc": 0.5725736238080711,
+            "paired_groups": 32,
+            "groups_below_half": 17,
+            "eligible_visits": 488026.0
+          }
+        }
+      },
+      "teacher_self": {
+        "class_conf": {
+          "pair_weighted_auc": 0.588280112455798,
+          "macro_auc": 0.5958880086770861,
+          "visit_weighted_auc": 0.5955700511017659,
+          "paired_groups": 20,
+          "groups_below_half": 1,
+          "eligible_visits": 4270157.0
+        },
+        "client_class_conf": {
+          "pair_weighted_auc": 0.4418271377491988,
+          "macro_auc": 0.4698931503468685,
+          "visit_weighted_auc": 0.514314123502103,
+          "paired_groups": 362,
+          "groups_below_half": 204,
+          "eligible_visits": 4185044.0
+        },
+        "round_client_class_conf": {
+          "pair_weighted_auc": 0.43836334369382707,
+          "macro_auc": 0.4712199285382879,
+          "visit_weighted_auc": 0.511968814185686,
+          "paired_groups": 4158,
+          "groups_below_half": 2264,
+          "eligible_visits": 4081228.0
+        },
+        "by_class": {
+          "0": {
+            "pair_weighted_auc": 0.49864582767884114,
+            "macro_auc": 0.5158993048295248,
+            "visit_weighted_auc": 0.5254804317420577,
+            "paired_groups": 36,
+            "groups_below_half": 16,
+            "eligible_visits": 441819.0
+          },
+          "1": {
+            "pair_weighted_auc": 0.346824382899242,
+            "macro_auc": 0.44324341165429043,
+            "visit_weighted_auc": 0.5153229577997812,
+            "paired_groups": 36,
+            "groups_below_half": 21,
+            "eligible_visits": 423607.0
+          },
+          "2": {
+            "pair_weighted_auc": 0.44353114369789093,
+            "macro_auc": 0.45563564596238165,
+            "visit_weighted_auc": 0.47113026219331494,
+            "paired_groups": 37,
+            "groups_below_half": 23,
+            "eligible_visits": 360957.0
+          },
+          "3": {
+            "pair_weighted_auc": 0.42701281645710604,
+            "macro_auc": 0.4817227788724797,
+            "visit_weighted_auc": 0.49554155998065197,
+            "paired_groups": 40,
+            "groups_below_half": 22,
+            "eligible_visits": 378032.0
+          },
+          "4": {
+            "pair_weighted_auc": 0.4789546110725413,
+            "macro_auc": 0.43784270105823664,
+            "visit_weighted_auc": 0.489919781762168,
+            "paired_groups": 38,
+            "groups_below_half": 25,
+            "eligible_visits": 408409.0
+          },
+          "5": {
+            "pair_weighted_auc": 0.3904762548127598,
+            "macro_auc": 0.46185580965696227,
+            "visit_weighted_auc": 0.4793897168464031,
+            "paired_groups": 34,
+            "groups_below_half": 20,
+            "eligible_visits": 366945.0
+          },
+          "6": {
+            "pair_weighted_auc": 0.4484399053329845,
+            "macro_auc": 0.513028360160611,
+            "visit_weighted_auc": 0.5368062408762821,
+            "paired_groups": 40,
+            "groups_below_half": 20,
+            "eligible_visits": 417204.0
+          },
+          "7": {
+            "pair_weighted_auc": 0.4626703326486631,
+            "macro_auc": 0.4681647676429745,
+            "visit_weighted_auc": 0.5199939123003299,
+            "paired_groups": 36,
+            "groups_below_half": 19,
+            "eligible_visits": 420823.0
+          },
+          "8": {
+            "pair_weighted_auc": 0.5156230327438,
+            "macro_auc": 0.4991019122361111,
+            "visit_weighted_auc": 0.5927817215651944,
+            "paired_groups": 33,
+            "groups_below_half": 15,
+            "eligible_visits": 479222.0
+          },
+          "9": {
+            "pair_weighted_auc": 0.3844088912615,
+            "macro_auc": 0.41431885196027596,
+            "visit_weighted_auc": 0.49530720396812156,
+            "paired_groups": 32,
+            "groups_below_half": 23,
+            "eligible_visits": 488026.0
+          }
+        }
+      }
+    }
+  },
+  "unmasked": {
+    "middle": {
+      "cross_view": {
+        "class_conf": {
+          "pair_weighted_auc": 0.4558688989874612,
+          "macro_auc": 0.49746315166099137,
+          "visit_weighted_auc": 0.47427096323221785,
+          "paired_groups": 20,
+          "groups_below_half": 11,
+          "eligible_visits": 13941451.0
+        },
+        "client_class_conf": {
+          "pair_weighted_auc": 0.33039662988340707,
+          "macro_auc": 0.45059886735924093,
+          "visit_weighted_auc": 0.45858017471461826,
+          "paired_groups": 366,
+          "groups_below_half": 225,
+          "eligible_visits": 13931632.0
+        },
+        "round_client_class_conf": {
+          "pair_weighted_auc": 0.3245714614172437,
+          "macro_auc": 0.4374802292088865,
+          "visit_weighted_auc": 0.4436856747009702,
+          "paired_groups": 14955,
+          "groups_below_half": 9637,
+          "eligible_visits": 13357977.0
+        }
+      },
+      "teacher_self": {
+        "class_conf": {
+          "pair_weighted_auc": 0.4498941691219169,
+          "macro_auc": 0.49873619511940054,
+          "visit_weighted_auc": 0.46997592645966924,
+          "paired_groups": 20,
+          "groups_below_half": 10,
+          "eligible_visits": 13941451.0
+        },
+        "client_class_conf": {
+          "pair_weighted_auc": 0.2935692567084158,
+          "macro_auc": 0.4321304218141586,
+          "visit_weighted_auc": 0.4322471821410356,
+          "paired_groups": 366,
+          "groups_below_half": 235,
+          "eligible_visits": 13931632.0
+        },
+        "round_client_class_conf": {
+          "pair_weighted_auc": 0.28188304314332846,
+          "macro_auc": 0.4144917276996602,
+          "visit_weighted_auc": 0.41204680138327293,
+          "paired_groups": 14955,
+          "groups_below_half": 9981,
+          "eligible_visits": 13357977.0
+        }
+      }
+    },
+    "late": {
+      "cross_view": {
+        "class_conf": {
+          "pair_weighted_auc": 0.5388044995503303,
+          "macro_auc": 0.5553368784573464,
+          "visit_weighted_auc": 0.5452229093025589,
+          "paired_groups": 20,
+          "groups_below_half": 3,
+          "eligible_visits": 14040811.0
+        },
+        "client_class_conf": {
+          "pair_weighted_auc": 0.41403221376955474,
+          "macro_auc": 0.49725747100327805,
+          "visit_weighted_auc": 0.5258691937903897,
+          "paired_groups": 364,
+          "groups_below_half": 173,
+          "eligible_visits": 13912123.0
+        },
+        "round_client_class_conf": {
+          "pair_weighted_auc": 0.4090816808762702,
+          "macro_auc": 0.4997461330440112,
+          "visit_weighted_auc": 0.5209378842630179,
+          "paired_groups": 13827,
+          "groups_below_half": 6455,
+          "eligible_visits": 13507447.0
+        }
+      },
+      "teacher_self": {
+        "class_conf": {
+          "pair_weighted_auc": 0.5515093818588449,
+          "macro_auc": 0.5653955548245574,
+          "visit_weighted_auc": 0.5546946398482886,
+          "paired_groups": 20,
+          "groups_below_half": 2,
+          "eligible_visits": 14040811.0
+        },
+        "client_class_conf": {
+          "pair_weighted_auc": 0.38664727610922167,
+          "macro_auc": 0.47193461982523716,
+          "visit_weighted_auc": 0.4984512223478273,
+          "paired_groups": 364,
+          "groups_below_half": 194,
+          "eligible_visits": 13912123.0
+        },
+        "round_client_class_conf": {
+          "pair_weighted_auc": 0.3719362259251434,
+          "macro_auc": 0.4703677997461752,
+          "visit_weighted_auc": 0.4891529086866272,
+          "paired_groups": 13827,
+          "groups_below_half": 7295,
+          "eligible_visits": 13507447.0
+        }
+      }
+    },
+    "tail30": {
+      "cross_view": {
+        "class_conf": {
+          "pair_weighted_auc": 0.5888021568196041,
+          "macro_auc": 0.590120898802007,
+          "visit_weighted_auc": 0.5969825100611815,
+          "paired_groups": 20,
+          "groups_below_half": 1,
+          "eligible_visits": 4269553.0
+        },
+        "client_class_conf": {
+          "pair_weighted_auc": 0.5045621213280506,
+          "macro_auc": 0.5294361920397376,
+          "visit_weighted_auc": 0.5592647893262349,
+          "paired_groups": 361,
+          "groups_below_half": 140,
+          "eligible_visits": 4183284.0
+        },
+        "round_client_class_conf": {
+          "pair_weighted_auc": 0.5039277004524632,
+          "macro_auc": 0.5322264116076926,
+          "visit_weighted_auc": 0.559972092367134,
+          "paired_groups": 4163,
+          "groups_below_half": 1602,
+          "eligible_visits": 4135961.0
+        },
+        "by_class": {
+          "0": {
+            "pair_weighted_auc": 0.5393924431645222,
+            "macro_auc": 0.5382209107148611,
+            "visit_weighted_auc": 0.5447519225240355,
+            "paired_groups": 36,
+            "groups_below_half": 14,
+            "eligible_visits": 438723.0
+          },
+          "1": {
+            "pair_weighted_auc": 0.4030106119410032,
+            "macro_auc": 0.5071358158428276,
+            "visit_weighted_auc": 0.5476660755432909,
+            "paired_groups": 36,
+            "groups_below_half": 20,
+            "eligible_visits": 423319.0
+          },
+          "2": {
+            "pair_weighted_auc": 0.5308933890292615,
+            "macro_auc": 0.5295792735982549,
+            "visit_weighted_auc": 0.5565757384135573,
+            "paired_groups": 37,
+            "groups_below_half": 13,
+            "eligible_visits": 355469.0
+          },
+          "3": {
+            "pair_weighted_auc": 0.4601378966873449,
+            "macro_auc": 0.515787404438319,
+            "visit_weighted_auc": 0.5114531682389081,
+            "paired_groups": 40,
+            "groups_below_half": 15,
+            "eligible_visits": 379424.0
+          },
+          "4": {
+            "pair_weighted_auc": 0.5121913308212374,
+            "macro_auc": 0.4940074470915039,
+            "visit_weighted_auc": 0.5233505295751963,
+            "paired_groups": 38,
+            "groups_below_half": 16,
+            "eligible_visits": 407837.0
+          },
+          "5": {
+            "pair_weighted_auc": 0.4611467379828982,
+            "macro_auc": 0.5315732877536918,
+            "visit_weighted_auc": 0.5250454456864349,
+            "paired_groups": 34,
+            "groups_below_half": 13,
+            "eligible_visits": 366823.0
+          },
+          "6": {
+            "pair_weighted_auc": 0.5251256630082998,
+            "macro_auc": 0.563178436010411,
+            "visit_weighted_auc": 0.5992230750461756,
+            "paired_groups": 40,
+            "groups_below_half": 11,
+            "eligible_visits": 420990.0
+          },
+          "7": {
+            "pair_weighted_auc": 0.5775850215944366,
+            "macro_auc": 0.5533752422409856,
+            "visit_weighted_auc": 0.55849701544521,
+            "paired_groups": 35,
+            "groups_below_half": 10,
+            "eligible_visits": 420863.0
+          },
+          "8": {
+            "pair_weighted_auc": 0.5740545278141163,
+            "macro_auc": 0.5638204578415001,
+            "visit_weighted_auc": 0.6152491345959336,
+            "paired_groups": 33,
+            "groups_below_half": 10,
+            "eligible_visits": 483324.0
+          },
+          "9": {
+            "pair_weighted_auc": 0.4927825807761588,
+            "macro_auc": 0.49751790840241156,
+            "visit_weighted_auc": 0.5880738476985811,
+            "paired_groups": 32,
+            "groups_below_half": 18,
+            "eligible_visits": 486512.0
+          }
+        }
+      },
+      "teacher_self": {
+        "class_conf": {
+          "pair_weighted_auc": 0.5746984943298973,
+          "macro_auc": 0.5779342182246162,
+          "visit_weighted_auc": 0.580058187386031,
+          "paired_groups": 20,
+          "groups_below_half": 2,
+          "eligible_visits": 4269553.0
+        },
+        "client_class_conf": {
+          "pair_weighted_auc": 0.460190852674886,
+          "macro_auc": 0.4866195628259661,
+          "visit_weighted_auc": 0.5186046347169235,
+          "paired_groups": 361,
+          "groups_below_half": 175,
+          "eligible_visits": 4183284.0
+        },
+        "round_client_class_conf": {
+          "pair_weighted_auc": 0.45893004643605756,
+          "macro_auc": 0.48634794460165937,
+          "visit_weighted_auc": 0.5182306709724823,
+          "paired_groups": 4163,
+          "groups_below_half": 2018,
+          "eligible_visits": 4135961.0
+        },
+        "by_class": {
+          "0": {
+            "pair_weighted_auc": 0.48527213730166396,
+            "macro_auc": 0.5038393305234445,
+            "visit_weighted_auc": 0.502696328953371,
+            "paired_groups": 36,
+            "groups_below_half": 18,
+            "eligible_visits": 438723.0
+          },
+          "1": {
+            "pair_weighted_auc": 0.3328903999061799,
+            "macro_auc": 0.4558361845047663,
+            "visit_weighted_auc": 0.5100546389007493,
+            "paired_groups": 36,
+            "groups_below_half": 22,
+            "eligible_visits": 423319.0
+          },
+          "2": {
+            "pair_weighted_auc": 0.4774702726318615,
+            "macro_auc": 0.49264353575918085,
+            "visit_weighted_auc": 0.508927243063639,
+            "paired_groups": 37,
+            "groups_below_half": 16,
+            "eligible_visits": 355469.0
+          },
+          "3": {
+            "pair_weighted_auc": 0.4344039887848084,
+            "macro_auc": 0.4976607802069538,
+            "visit_weighted_auc": 0.4916053853398906,
+            "paired_groups": 40,
+            "groups_below_half": 16,
+            "eligible_visits": 379424.0
+          },
+          "4": {
+            "pair_weighted_auc": 0.484112457949681,
+            "macro_auc": 0.45758620639025843,
+            "visit_weighted_auc": 0.500271822905376,
+            "paired_groups": 38,
+            "groups_below_half": 20,
+            "eligible_visits": 407837.0
+          },
+          "5": {
+            "pair_weighted_auc": 0.4153104678908685,
+            "macro_auc": 0.47318704976743564,
+            "visit_weighted_auc": 0.49126594507306026,
+            "paired_groups": 34,
+            "groups_below_half": 18,
+            "eligible_visits": 366823.0
+          },
+          "6": {
+            "pair_weighted_auc": 0.4892807576039654,
+            "macro_auc": 0.5325983595451009,
+            "visit_weighted_auc": 0.5781429422933924,
+            "paired_groups": 40,
+            "groups_below_half": 14,
+            "eligible_visits": 420990.0
+          },
+          "7": {
+            "pair_weighted_auc": 0.5184070406583488,
+            "macro_auc": 0.4968316720381992,
+            "visit_weighted_auc": 0.5047190867759711,
+            "paired_groups": 35,
+            "groups_below_half": 15,
+            "eligible_visits": 420863.0
+          },
+          "8": {
+            "pair_weighted_auc": 0.5293913254396435,
+            "macro_auc": 0.5085879912623823,
+            "visit_weighted_auc": 0.5846655127076394,
+            "paired_groups": 33,
+            "groups_below_half": 13,
+            "eligible_visits": 483324.0
+          },
+          "9": {
+            "pair_weighted_auc": 0.42076573996551053,
+            "macro_auc": 0.4385631080646279,
+            "visit_weighted_auc": 0.4993619928542989,
+            "paired_groups": 32,
+            "groups_below_half": 23,
+            "eligible_visits": 486512.0
+          }
+        }
+      }
+    }
+  },
+  "masked": {
+    "middle": {
+      "cross_view": {
+        "class_conf": {
+          "pair_weighted_auc": 0.44906629056973185,
+          "macro_auc": 0.49513349036541543,
+          "visit_weighted_auc": 0.4693841068130788,
+          "paired_groups": 20,
+          "groups_below_half": 11,
+          "eligible_visits": 13959843.0
+        },
+        "client_class_conf": {
+          "pair_weighted_auc": 0.317107560580119,
+          "macro_auc": 0.44221158257873894,
+          "visit_weighted_auc": 0.4548771836767897,
+          "paired_groups": 366,
+          "groups_below_half": 227,
+          "eligible_visits": 13949592.0
+        },
+        "round_client_class_conf": {
+          "pair_weighted_auc": 0.31087074296417977,
+          "macro_auc": 0.4277637486217273,
+          "visit_weighted_auc": 0.4352430985544324,
+          "paired_groups": 14958,
+          "groups_below_half": 9805,
+          "eligible_visits": 13320138.0
+        }
+      },
+      "teacher_self": {
+        "class_conf": {
+          "pair_weighted_auc": 0.4472393497136583,
+          "macro_auc": 0.49803690660621835,
+          "visit_weighted_auc": 0.4684015477456445,
+          "paired_groups": 20,
+          "groups_below_half": 10,
+          "eligible_visits": 13959843.0
+        },
+        "client_class_conf": {
+          "pair_weighted_auc": 0.28658630220444575,
+          "macro_auc": 0.42416822632132717,
+          "visit_weighted_auc": 0.4317858210443339,
+          "paired_groups": 366,
+          "groups_below_half": 235,
+          "eligible_visits": 13949592.0
+        },
+        "round_client_class_conf": {
+          "pair_weighted_auc": 0.27484548462787617,
+          "macro_auc": 0.40566704042603613,
+          "visit_weighted_auc": 0.4064832554683781,
+          "paired_groups": 14958,
+          "groups_below_half": 10094,
+          "eligible_visits": 13320138.0
+        }
+      }
+    },
+    "late": {
+      "cross_view": {
+        "class_conf": {
+          "pair_weighted_auc": 0.5377622722813397,
+          "macro_auc": 0.5609575199053624,
+          "visit_weighted_auc": 0.5462654808476242,
+          "paired_groups": 20,
+          "groups_below_half": 3,
+          "eligible_visits": 14059857.0
+        },
+        "client_class_conf": {
+          "pair_weighted_auc": 0.3881923184656831,
+          "macro_auc": 0.4800014408346168,
+          "visit_weighted_auc": 0.5132955635074362,
+          "paired_groups": 364,
+          "groups_below_half": 197,
+          "eligible_visits": 13931770.0
+        },
+        "round_client_class_conf": {
+          "pair_weighted_auc": 0.3855292572695546,
+          "macro_auc": 0.48442328340004287,
+          "visit_weighted_auc": 0.5102581225951679,
+          "paired_groups": 13771,
+          "groups_below_half": 7064,
+          "eligible_visits": 13438635.0
+        }
+      },
+      "teacher_self": {
+        "class_conf": {
+          "pair_weighted_auc": 0.5516319664029631,
+          "macro_auc": 0.5728241872509872,
+          "visit_weighted_auc": 0.5575311392338349,
+          "paired_groups": 20,
+          "groups_below_half": 3,
+          "eligible_visits": 14059857.0
+        },
+        "client_class_conf": {
+          "pair_weighted_auc": 0.3643575203787517,
+          "macro_auc": 0.45435944290850855,
+          "visit_weighted_auc": 0.4864798063899027,
+          "paired_groups": 364,
+          "groups_below_half": 212,
+          "eligible_visits": 13931770.0
+        },
+        "round_client_class_conf": {
+          "pair_weighted_auc": 0.35325276581861104,
+          "macro_auc": 0.45681803644739366,
+          "visit_weighted_auc": 0.4803036041245296,
+          "paired_groups": 13771,
+          "groups_below_half": 7736,
+          "eligible_visits": 13438635.0
+        }
+      }
+    },
+    "tail30": {
+      "cross_view": {
+        "class_conf": {
+          "pair_weighted_auc": 0.6002401331880504,
+          "macro_auc": 0.6058850768538947,
+          "visit_weighted_auc": 0.6102621333614452,
+          "paired_groups": 20,
+          "groups_below_half": 0,
+          "eligible_visits": 4274320.0
+        },
+        "client_class_conf": {
+          "pair_weighted_auc": 0.48376821892907823,
+          "macro_auc": 0.510066857082292,
+          "visit_weighted_auc": 0.5510040500730905,
+          "paired_groups": 360,
+          "groups_below_half": 157,
+          "eligible_visits": 4154097.0
+        },
+        "round_client_class_conf": {
+          "pair_weighted_auc": 0.48276813426430526,
+          "macro_auc": 0.5158430281656801,
+          "visit_weighted_auc": 0.5513218328040946,
+          "paired_groups": 4127,
+          "groups_below_half": 1776,
+          "eligible_visits": 4070956.0
+        },
+        "by_class": {
+          "0": {
+            "pair_weighted_auc": 0.5371466407378152,
+            "macro_auc": 0.5435767876746826,
+            "visit_weighted_auc": 0.5588843479619292,
+            "paired_groups": 36,
+            "groups_below_half": 16,
+            "eligible_visits": 446591.0
+          },
+          "1": {
+            "pair_weighted_auc": 0.38410951366938695,
+            "macro_auc": 0.47870626711784486,
+            "visit_weighted_auc": 0.55255868310626,
+            "paired_groups": 35,
+            "groups_below_half": 20,
+            "eligible_visits": 421637.0
+          },
+          "2": {
+            "pair_weighted_auc": 0.5057045686816717,
+            "macro_auc": 0.5083062880844015,
+            "visit_weighted_auc": 0.5363465169002443,
+            "paired_groups": 37,
+            "groups_below_half": 15,
+            "eligible_visits": 359525.0
+          },
+          "3": {
+            "pair_weighted_auc": 0.4349613353020523,
+            "macro_auc": 0.5068766397558646,
+            "visit_weighted_auc": 0.5063478196290823,
+            "paired_groups": 40,
+            "groups_below_half": 15,
+            "eligible_visits": 378146.0
+          },
+          "4": {
+            "pair_weighted_auc": 0.4994855887174469,
+            "macro_auc": 0.48401394762678973,
+            "visit_weighted_auc": 0.519445158517902,
+            "paired_groups": 38,
+            "groups_below_half": 15,
+            "eligible_visits": 404293.0
+          },
+          "5": {
+            "pair_weighted_auc": 0.43336113596311043,
+            "macro_auc": 0.48463032954766616,
+            "visit_weighted_auc": 0.5043221056064877,
+            "paired_groups": 34,
+            "groups_below_half": 18,
+            "eligible_visits": 366900.0
+          },
+          "6": {
+            "pair_weighted_auc": 0.5046223020703305,
+            "macro_auc": 0.5564710248599152,
+            "visit_weighted_auc": 0.589451020523216,
+            "paired_groups": 40,
+            "groups_below_half": 15,
+            "eligible_visits": 416653.0
+          },
+          "7": {
+            "pair_weighted_auc": 0.5153253944240216,
+            "macro_auc": 0.49850245918952296,
+            "visit_weighted_auc": 0.50795189622873,
+            "paired_groups": 36,
+            "groups_below_half": 16,
+            "eligible_visits": 423962.0
+          },
+          "8": {
+            "pair_weighted_auc": 0.5751668410128807,
+            "macro_auc": 0.5675163709652123,
+            "visit_weighted_auc": 0.6423419433464881,
+            "paired_groups": 33,
+            "groups_below_half": 9,
+            "eligible_visits": 481148.0
+          },
+          "9": {
+            "pair_weighted_auc": 0.4845783914812836,
+            "macro_auc": 0.46500824559175646,
+            "visit_weighted_auc": 0.5645234418989387,
+            "paired_groups": 31,
+            "groups_below_half": 18,
+            "eligible_visits": 455242.0
+          }
+        }
+      },
+      "teacher_self": {
+        "class_conf": {
+          "pair_weighted_auc": 0.5871711132769656,
+          "macro_auc": 0.5966189160380547,
+          "visit_weighted_auc": 0.5961141249256005,
+          "paired_groups": 20,
+          "groups_below_half": 1,
+          "eligible_visits": 4274320.0
+        },
+        "client_class_conf": {
+          "pair_weighted_auc": 0.44300799382188133,
+          "macro_auc": 0.4675494282589397,
+          "visit_weighted_auc": 0.5078955705031002,
+          "paired_groups": 360,
+          "groups_below_half": 196,
+          "eligible_visits": 4154097.0
+        },
+        "round_client_class_conf": {
+          "pair_weighted_auc": 0.4410329925363569,
+          "macro_auc": 0.4705205880347201,
+          "visit_weighted_auc": 0.507671496651957,
+          "paired_groups": 4127,
+          "groups_below_half": 2182,
+          "eligible_visits": 4070956.0
+        },
+        "by_class": {
+          "0": {
+            "pair_weighted_auc": 0.4945629433131117,
+            "macro_auc": 0.5103642670386894,
+            "visit_weighted_auc": 0.5196309013640296,
+            "paired_groups": 36,
+            "groups_below_half": 20,
+            "eligible_visits": 446591.0
+          },
+          "1": {
+            "pair_weighted_auc": 0.33256508819668873,
+            "macro_auc": 0.43410722171229127,
+            "visit_weighted_auc": 0.505808362703961,
+            "paired_groups": 35,
+            "groups_below_half": 23,
+            "eligible_visits": 421637.0
+          },
+          "2": {
+            "pair_weighted_auc": 0.46382625830534463,
+            "macro_auc": 0.4802869389538566,
+            "visit_weighted_auc": 0.4921237866003085,
+            "paired_groups": 37,
+            "groups_below_half": 19,
+            "eligible_visits": 359525.0
+          },
+          "3": {
+            "pair_weighted_auc": 0.42241306816964563,
+            "macro_auc": 0.4750199896258572,
+            "visit_weighted_auc": 0.4915230807046759,
+            "paired_groups": 40,
+            "groups_below_half": 17,
+            "eligible_visits": 378146.0
+          },
+          "4": {
+            "pair_weighted_auc": 0.46673514093653196,
+            "macro_auc": 0.44000715897302295,
+            "visit_weighted_auc": 0.489488463676032,
+            "paired_groups": 38,
+            "groups_below_half": 22,
+            "eligible_visits": 404293.0
+          },
+          "5": {
+            "pair_weighted_auc": 0.3862849463381004,
+            "macro_auc": 0.45607459150661733,
+            "visit_weighted_auc": 0.4737300725294955,
+            "paired_groups": 34,
+            "groups_below_half": 22,
+            "eligible_visits": 366900.0
+          },
+          "6": {
+            "pair_weighted_auc": 0.461377419183744,
+            "macro_auc": 0.5122095994912506,
+            "visit_weighted_auc": 0.5433905837520141,
+            "paired_groups": 40,
+            "groups_below_half": 19,
+            "eligible_visits": 416653.0
+          },
+          "7": {
+            "pair_weighted_auc": 0.44599569141043954,
+            "macro_auc": 0.44374188643040074,
+            "visit_weighted_auc": 0.44613025748140517,
+            "paired_groups": 36,
+            "groups_below_half": 20,
+            "eligible_visits": 423962.0
+          },
+          "8": {
+            "pair_weighted_auc": 0.5383263257884077,
+            "macro_auc": 0.5129865519772118,
+            "visit_weighted_auc": 0.614526673055624,
+            "paired_groups": 33,
+            "groups_below_half": 12,
+            "eligible_visits": 481148.0
+          },
+          "9": {
+            "pair_weighted_auc": 0.40951833210137667,
+            "macro_auc": 0.3987437166121291,
+            "visit_weighted_auc": 0.4805904862300592,
+            "paired_groups": 31,
+            "groups_below_half": 22,
+            "eligible_visits": 455242.0
+          }
+        }
+      }
+    }
+  }
+}

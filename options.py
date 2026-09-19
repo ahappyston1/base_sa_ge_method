@@ -266,6 +266,8 @@ def args_parser():
     parser.add_argument('--bc_feature_weight', type=float, default=.10)
     parser.add_argument('--bc_targets', type=int, choices=(0,1), default=0)
     parser.add_argument('--target_experiment', choices=('none','evidence','labelhead','separation'), default='none')
+    parser.add_argument('--lr_schedule', choices=('cosine','constant015','step200','step200_tail'), default='cosine')
+    parser.add_argument('--labelhead_guard', type=int, choices=(0,1), default=0)
     parser.add_argument('--bc_tail', choices=('none','breliability','aguard','featurehalf'), default='none')
     parser.add_argument('--bc_fork', type=int, choices=(0,1), default=0,
                         help='Explicitly fork complete baseline BC round225 state into a new run')
@@ -299,6 +301,15 @@ def args_parser():
         raise FileNotFoundError(f'--config 指定的 YAML 不存在: {yp}')
 
     args = parser.parse_args()
+    if args.lr_schedule not in ('cosine','constant015','step200','step200_tail') or args.labelhead_guard not in (0,1):
+        parser.error('Invalid labelhead follow-up controls')
+    if args.lr_schedule != 'cosine' or args.labelhead_guard:
+        if args.target_experiment != 'labelhead' or not args.bc_targets:
+            parser.error('Labelhead follow-ups require target_experiment=labelhead and bc_targets=1')
+        if args.lr_local_training != .15 or args.lr_min != .0001 or args.lr_mid_factor != 1.:
+            parser.error('Fixed labelhead recipes require lr=0.15, lr_min=0.0001, lr_mid_factor=1')
+        if args.labelhead_guard and args.lr_schedule != 'cosine':
+            parser.error('Run labelhead guard and LR directions independently first')
     if args.target_experiment not in ('none','evidence','labelhead','separation'):
         parser.error('Unknown target_experiment')
     if args.target_experiment != 'none' and not args.bc_targets:

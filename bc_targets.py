@@ -107,9 +107,15 @@ def objectives(logits,pred,a,b,wa,wb,result,strength):
     partial=-torch.logsumexp(logp.masked_fill(~result['candidates'],-torch.inf),dim=-1)
     soft=F.kl_div(logp,result['target'],reduction='none').sum(-1)
     s=result['state']; routed=torch.where(s==0,hard,torch.where(s==1,partial,torch.where(s==2,soft,torch.zeros_like(hard))))
+    if 'guard_protected' in result:
+        before=result['before_state']
+        original=torch.where(before==0,hard,torch.where(before==1,partial,
+                             torch.where(before==2,soft,torch.zeros_like(hard))))
+        share=result['guard_hard_share']
+        routed=torch.where(result['guard_protected'],share*hard+(1-share)*original,routed)
     la=(wa.detach()*((1-strength)*hard+strength*routed)).mean()
     lb=(wb.detach()*b*result['reliability']*routed).mean()
-    proto=1-strength*result['a_changed'].float()
+    proto=1-strength*result.get('prototype_blocked',result['a_changed']).float()
     return la,lb,proto
 
 
@@ -124,6 +130,8 @@ def audit(result,pred,a,b,truth,wa,wb,strength):
     s=result['state'];right=pred==truth;teacher_right=result['target'].argmax(-1)==truth
     changed=result['a_changed'];candidate=(a|b)&(s==1);soft=(a|b)&(s==2)
     removed=wa.detach()*strength*changed
+    if 'guard_protected' in result:
+        removed=removed+wa.detach()*strength*result['guard_protected']*(1-result['guard_hard_share'])
     values=(a,b,result['mature']&(a|b),changed,changed&right,candidate,
             candidate&result['candidates'].gather(1,truth[:,None]).squeeze(1),soft,soft&teacher_right,
             result['soft_a']&~right&teacher_right,result['soft_a']&right&~teacher_right,

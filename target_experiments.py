@@ -36,7 +36,7 @@ def controls(mode):
 
 
 @torch.no_grad()
-def revise(result, mode, pred, a, q, p, hist, mature, z, ref, auxiliary=None):
+def revise(result, mode, pred, a, q, p, hist, mature, z, ref, auxiliary=None, guard=False):
     """Modify A only. B/C, original weights and the outer target ramp are intact."""
     result = {k: v.clone() for k, v in result.items()}
     result['before_state'] = result['state'].clone()
@@ -72,7 +72,11 @@ def revise(result, mode, pred, a, q, p, hist, mature, z, ref, auxiliary=None):
         teacher_agrees = ((q.argmax(-1) == alt) & (p.argmax(-1) == alt)
                           & (q.max(-1).values >= .60) & (p.max(-1).values >= .60))
         reliable = a & stable & teacher_agrees
-        s[reliable & (alt == pred)] = 0
+        protect = reliable & (alt == pred)
+        if guard:
+            result['guard_protected'] = protect & (s != 0)
+            result['guard_hard_share'] = torch.full_like(q[:, 0], guard_controls()['hard_share'])
+        s[protect] = 0
         change = reliable & (alt != pred)
         s[change] = 2
         # One replacement target, not an additional CE against the old label.
@@ -84,7 +88,35 @@ def revise(result, mode, pred, a, q, p, hist, mature, z, ref, auxiliary=None):
         result['aux_teacher_agrees'] = teacher_agrees
     result['a_changed'] = a & (s != 0)
     result['soft_a'] = a & (s == 2)
+    if guard:
+        # The routing state stays identical to ordinary labelhead. Only protected
+        # classification loss and prototype writes change; feature masks do not.
+        blocked = a & ((result['before_state'] != 0) | (s != 0))
+        result['prototype_blocked'] = blocked
+        result['feature_a'] = result['a_changed'].clone()
     return result
+
+
+def guard_controls():
+    return dict(version=2, protection='original_labelhead_set', hard_share=.5,
+                correction='unchanged', prototype='union_before_after_nonhard',
+                feature='original_labelhead')
+
+
+GUARD_FIELDS = ('guard_protected','guard_protected_correct','guard_blocked_protected',
+                'guard_blocked_correct_mass','guard_blocked_wrong_mass',
+                'guard_ce_reduced_correct_mass','guard_ce_reduced_wrong_mass')
+
+
+@torch.no_grad()
+def guard_audit(result, pred, truth, weights, strength):
+    protected = result['guard_protected']
+    correct = pred == truth
+    mass = weights.detach()*protected*strength
+    reduced = mass*(1-result['guard_hard_share'])
+    return dict(zip(GUARD_FIELDS, (float(protected.sum()),float((protected & correct).sum()),
+                float(protected.sum()),float((mass*correct).sum()),float((mass*~correct).sum()),
+                float((reduced*correct).sum()),float((reduced*~correct).sum()))))
 
 
 @contextmanager
